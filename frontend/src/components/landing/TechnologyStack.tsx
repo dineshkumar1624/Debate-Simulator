@@ -20,9 +20,9 @@ export const TechnologyStack: React.FC = () => {
       icon: Cpu,
       color: 'text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-500/30 bg-indigo-50 dark:bg-indigo-950/40',
       items: [
-        { name: 'OpenAI (GPT-4o)', desc: 'Complex reasoning & dialectic thesis' },
-        { name: 'Google (Gemini 1.5/2.0)', desc: 'Deep synthesis & large context lookup' },
-        { name: 'Anthropic (Claude 3.5)', desc: 'Nuanced counterargument & arbitration' },
+        { name: 'Google Gemma 4 E4B (PRO)', desc: 'Local Q4_0 GGUF inference via llama.cpp for dialectical thesis & evidence' },
+        { name: 'Alibaba Qwen 2.5 VL 7B (CON)', desc: 'Local adversarial cross-examination, antithesis & systemic risk challenge' },
+        { name: 'Google Gemini 3.5 Flash (JUDGE)', desc: 'Official Google GenAI API for 9-criteria dialectical adjudication' },
       ],
     },
     {

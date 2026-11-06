@@ -3,12 +3,47 @@ import { Link, useLocation } from 'react-router-dom';
 import { Menu, X, ArrowRight, Sun, Moon, Settings as SettingsIcon } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { useTheme } from '../../context/ThemeContext';
+import { debateApi } from '../../services/api';
 
 export const Navbar: React.FC = () => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [activeDebate, setActiveDebate] = useState<{ id: string; topic: string } | null>(null);
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkActive = async () => {
+      try {
+        const storedId = sessionStorage.getItem('activeDebateId') || localStorage.getItem('activeDebateId');
+        if (storedId) {
+          const deb = await debateApi.getDebate(storedId);
+          if (isMounted && deb && ['debating', 'running', 'queued', 'evaluating'].includes(deb.status)) {
+            setActiveDebate({ id: deb.id, topic: deb.topic });
+            return;
+          }
+        }
+        const activeRes = await debateApi.getActiveDebate();
+        if (isMounted) {
+          if (activeRes && activeRes.hasActive && activeRes.debateId) {
+            setActiveDebate({ id: activeRes.debateId, topic: activeRes.topic || 'Active Deliberation' });
+          } else {
+            setActiveDebate(null);
+          }
+        }
+      } catch (_) {
+        if (isMounted) setActiveDebate(null);
+      }
+    };
+
+    checkActive();
+    const interval = setInterval(checkActive, 4000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [location.pathname]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -157,8 +192,21 @@ export const Navbar: React.FC = () => {
           })}
         </nav>
 
-        {/* Desktop Right Side: Theme Toggle | Settings Icon (⚙) | START A DEBATE → (Section 3 & 37) */}
+        {/* Desktop Right Side: Active Debate Pill | Theme Toggle | Settings Icon (⚙) | START A DEBATE → */}
         <div className="hidden md:flex items-center gap-3">
+          {/* Active Debate Floating Reconnection Pill */}
+          {activeDebate && !location.pathname.startsWith('/debate') && (
+            <Link
+              to={`/debate?id=${activeDebate.id}`}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-indigo-400/40 bg-indigo-50/90 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 text-xs font-mono font-bold animate-pulse shadow-sm hover:scale-102 transition-transform"
+              title={`Debate in progress: "${activeDebate.topic}". Click to return to chamber.`}
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              <span>LIVE DEBATE</span>
+              <ArrowRight className="w-3 h-3 text-indigo-500" />
+            </Link>
+          )}
+
           {/* Theme Toggle */}
           <button
             type="button"

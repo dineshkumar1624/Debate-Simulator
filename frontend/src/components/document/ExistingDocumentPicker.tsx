@@ -49,68 +49,84 @@ export const ExistingDocumentPicker: React.FC<ExistingDocumentPickerProps> = ({
 
         {/* List of documents */}
         <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-          {documents.map((doc) => {
-            const isSelected = doc.id === activeDocument.id;
-            return (
-              <div
-                key={doc.id}
-                onClick={() => {
-                  onSelect(doc);
-                  onClose();
-                }}
-                className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-4 ${
-                  isSelected
-                    ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/40 shadow-sm ring-1 ring-indigo-500/30'
-                    : 'border-slate-200/80 dark:border-white/10 bg-slate-50/50 dark:bg-slate-900/40 hover:border-indigo-300 dark:hover:border-indigo-500/40 hover:bg-white dark:hover:bg-slate-900/70'
-                }`}
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500 shrink-0">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-mono font-bold text-slate-900 dark:text-white truncate">
-                        {doc.name}
-                      </h4>
-                      {isSelected && (
-                        <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30">
-                          CURRENT
-                        </span>
-                      )}
+          {documents.length > 0 ? (
+            documents.map((doc) => {
+              const isSelected = Boolean(activeDocument && doc.id === activeDocument.id);
+              return (
+                <div
+                  key={doc.id}
+                  onClick={() => {
+                    onSelect(doc);
+                    onClose();
+                  }}
+                  className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-4 ${
+                    isSelected
+                      ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/40 shadow-sm ring-1 ring-indigo-500/30'
+                      : 'border-slate-200/80 dark:border-white/10 bg-slate-50/50 dark:bg-slate-900/40 hover:border-indigo-300 dark:hover:border-indigo-500/40 hover:bg-white dark:hover:bg-slate-900/70'
+                  }`}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500 shrink-0">
+                      <FileText className="w-5 h-5" />
                     </div>
-                    <div className="text-xs font-mono text-slate-500 dark:text-slate-400 flex items-center gap-2 mt-0.5">
-                      <span>{doc.pageCount} pages</span>
-                      <span>•</span>
-                      <span>{doc.fileType.toUpperCase()}</span>
-                      <span>•</span>
-                      <span>{doc.fileSize}</span>
-                      <span>•</span>
-                      <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Ready</span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-mono font-bold text-slate-900 dark:text-white truncate">
+                          {doc.name}
+                        </h4>
+                        {isSelected && (
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30">
+                            CURRENT
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-mono text-slate-500 dark:text-slate-400 flex items-center gap-2 mt-0.5">
+                        <span>{doc.pageCount} pages</span>
+                        <span>•</span>
+                        <span>{doc.fileType.toUpperCase()}</span>
+                        <span>•</span>
+                        <span>{doc.fileSize}</span>
+                        <span>•</span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Ready</span>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-1 mt-1 font-normal">
+                        {doc.summary}
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-1 mt-1 font-normal">
-                      {doc.summary}
-                    </p>
                   </div>
-                </div>
 
-                <div className="shrink-0">
-                  {isSelected ? (
-                    <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-sm">
-                      <Check className="w-4 h-4" />
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-mono font-medium hover:border-indigo-400 text-slate-700 dark:text-slate-300"
-                    >
-                      Select
-                    </button>
-                  )}
+                  <div className="shrink-0">
+                    {isSelected ? (
+                      <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                        <Check className="w-4 h-4" />
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-mono font-medium hover:border-indigo-400 text-slate-700 dark:text-slate-300"
+                      >
+                        Select
+                      </button>
+                    )}
+                  </div>
                 </div>
+              );
+            })
+          ) : (
+            <div className="py-10 text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                <FileText className="w-6 h-6" />
               </div>
-            );
-          })}
+              <div>
+                <p className="text-sm font-mono font-bold text-slate-800 dark:text-white">
+                  No documents in repository
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto">
+                  Upload a fresh PDF document to start an evidence-grounded debate.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

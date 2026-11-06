@@ -10,6 +10,7 @@ import DocumentsPage from './pages/DocumentsPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 import PipelinePage from './pages/PipelinePage';
 import HistoryPage from './pages/HistoryPage';
+import DebateReplayPage from './pages/DebateReplayPage';
 import SettingsPage from './pages/SettingsPage';
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -39,6 +40,7 @@ export const App: React.FC = () => {
               <Route path="/pipeline" element={<PipelinePage />} />
               <Route path="/technology" element={<Navigate to="/how-it-works" replace />} />
               <Route path="/history" element={<HistoryPage />} />
+              <Route path="/history/:debateId" element={<DebateReplayPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               {/* 404 Fallback Route */}
               <Route path="*" element={<NotFoundPage />} />

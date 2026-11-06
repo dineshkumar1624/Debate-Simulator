@@ -1,0 +1,17 @@
+{
+  "include": [
+    "app"
+  ],
+  "extraPaths": [
+    ".",
+    ".venv/Lib/site-packages"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
+  "reportGeneralTypeIssues": false,
+  "reportArgumentType": false,
+  "reportAttributeAccessIssue": false,
+  "reportMissingImports": false,
+  "reportOptionalMemberAccess": false
+}

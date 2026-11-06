@@ -18,8 +18,9 @@ export const SettingsPage: React.FC = () => {
   const { theme, setTheme } = useTheme();
 
   // Local preferences state
-  const [proModel, setProModel] = useState<string>('gpt-4o');
-  const [conModel, setConModel] = useState<string>('claude-3-5-sonnet');
+  const [proModel, setProModel] = useState<string>('gemma-4-E4B-Q4_0');
+  const [conModel, setConModel] = useState<string>('Qwen2.5-VL-7B-Instruct');
+  const [judgeModel, setJudgeModel] = useState<string>('gemini-3.5-flash');
   const [rounds, setRounds] = useState<number>(3);
   const [responseStyle, setResponseStyle] = useState<string>('Adversarial Dialectic');
 
@@ -169,41 +170,51 @@ export const SettingsPage: React.FC = () => {
                 Model Preferences
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Default foundation models for AI PRO and AI CON debaters
+                Default foundation models for AI PRO, CON debaters, and Judge
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
             <div>
               <label className="block text-xs font-mono font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Default PRO Model:
+                PRO Model (Affirmative):
               </label>
               <select
                 value={proModel}
                 onChange={(e) => setProModel(e.target.value)}
                 className="w-full h-10 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs text-slate-800 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/40"
               >
-                <option value="gpt-4o">OpenAI GPT-4o</option>
-                <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                <option value="gemini-1-5-pro">Gemini 1.5 Pro</option>
-                <option value="llama-3-3-70b">Meta Llama 3.3 70B</option>
+                <option value="gemma-4-E4B-Q4_0">Google Gemma 4 E4B Instruct (Q4_0 GGUF Local)</option>
+                <option value="gemma-4-E4B-it">Google Gemma 4 E4B Instruct (Local HF)</option>
               </select>
             </div>
 
             <div>
               <label className="block text-xs font-mono font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Default CON Model:
+                CON Model (Negative):
               </label>
               <select
                 value={conModel}
                 onChange={(e) => setConModel(e.target.value)}
                 className="w-full h-10 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs text-slate-800 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-pink-500/40"
               >
-                <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                <option value="gpt-4o">OpenAI GPT-4o</option>
-                <option value="gemini-1-5-pro">Gemini 1.5 Pro</option>
-                <option value="llama-3-3-70b">Meta Llama 3.3 70B</option>
+                <option value="Qwen2.5-VL-7B-Instruct">Alibaba Qwen 2.5 VL 7B Instruct (Local)</option>
+                <option value="Qwen2.5-7B-Instruct">Alibaba Qwen 2.5 7B Instruct (Local)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-mono font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                JUDGE Model (Adjudication):
+              </label>
+              <select
+                value={judgeModel}
+                onChange={(e) => setJudgeModel(e.target.value)}
+                className="w-full h-10 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs text-slate-800 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40"
+              >
+                <option value="gemini-3.5-flash">Google Gemini 3.5 Flash (Official GenAI API)</option>
+                <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Official GenAI API)</option>
               </select>
             </div>
           </div>

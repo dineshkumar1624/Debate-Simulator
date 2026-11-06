@@ -1,29 +1,12 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { DocumentMetadata, EvidenceReference, DebateMode } from '../types/document';
-
-export const VALID_EXTENSIONS = ['pdf', 'docx', 'txt'] as const;
-export const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
-
-export function validateDocumentFile(file: File): { valid: boolean; error?: string } {
-  const ext = file.name.split('.').pop()?.toLowerCase();
-  if (!ext || !['pdf', 'docx', 'txt'].includes(ext)) {
-    return {
-      valid: false,
-      error: 'Unsupported file format. Please upload a PDF, DOCX, or TXT document.',
-    };
-  }
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    return {
-      valid: false,
-      error: 'File size exceeds 25 MB limit for document processing.',
-    };
-  }
-  return { valid: true };
-}
+import { debateApi } from '../services/api';
 
 interface DocumentContextType {
-  activeDocument: DocumentMetadata;
+  activeDocument: DocumentMetadata | null;
   documents: DocumentMetadata[];
+  activeKnowledge: any | null;
+  queryKnowledge: (query: string) => Promise<any>;
   activeQuestion: string;
   setActiveQuestion: (q: string) => void;
   selectedMode: DebateMode;
@@ -32,213 +15,90 @@ interface DocumentContextType {
   processingStage: string;
   uploadDocument: (file: File) => Promise<DocumentMetadata>;
   replaceActiveDocument: (file: File) => Promise<DocumentMetadata>;
-  removeDocument: (id: string) => void;
+  removeDocument: (id: string) => Promise<void>;
+  clearAllDocuments: () => Promise<void>;
   selectDocument: (id: string) => void;
   evidenceItems: EvidenceReference[];
 }
 
-const DEFAULT_DOCUMENTS: DocumentMetadata[] = [
-  {
-    id: 'doc-ai-law',
-    name: 'AI_in_HighStakes_Law.pdf',
-    fileSize: '1.8 MB',
-    fileSizeBytes: 1887436,
-    fileType: 'pdf',
-    pageCount: 24,
-    uploadedAt: 'Today, 2:40 PM',
-    status: 'ready',
-    summary:
-      'Empirical evaluation of neural decision-support algorithms deployed in civil and criminal liability adjudication, analyzing error distribution, statutory compliance, and due process bounds.',
-    keyClaimsCount: 14,
-    evidencePointsCount: 38,
-    debatesCount: 3,
-    sections: [
-      {
-        id: 'sec-1',
-        title: 'Executive Summary & Jurisprudential Context',
-        pageNumber: 1,
-        wordCount: 820,
-        claimsCount: 3,
-        summary: 'Introduces statutory tension between algorithmic consistency and constitutional human oversight.',
-      },
-      {
-        id: 'sec-2',
-        title: 'Methodology & Error Distribution Analysis',
-        pageNumber: 5,
-        wordCount: 1450,
-        claimsCount: 4,
-        summary: 'Benchmarking 12,000 synthetic judicial rulings comparing autonomous and human panels.',
-      },
-      {
-        id: 'sec-3',
-        title: 'Empirical Results & Consistency Gains',
-        pageNumber: 8,
-        wordCount: 1980,
-        claimsCount: 5,
-        summary: 'Reports 32% lower inter-circuit sentencing variance and Bayesian prior adherence.',
-      },
-      {
-        id: 'sec-4',
-        title: 'Out-of-Distribution Failures & Black Swan Vulnerabilities',
-        pageNumber: 14,
-        wordCount: 1640,
-        claimsCount: 4,
-        summary: 'Exposes catastrophic misclassification in novel socio-legal dilemmas lacking training precedents.',
-      },
-      {
-        id: 'sec-5',
-        title: 'Constitutional Recourse & Legitimacy Bounds',
-        pageNumber: 19,
-        wordCount: 1320,
-        claimsCount: 3,
-        summary: 'Argues algorithmic opacity violates procedural due process and democratic accountability.',
-      },
-      {
-        id: 'sec-6',
-        title: 'Concluding Policy Framework',
-        pageNumber: 23,
-        wordCount: 910,
-        claimsCount: 2,
-        summary: 'Recommends dual-track framework: automated bounded verification with non-delegable human liability.',
-      },
-    ],
-    suggestedQuestions: [
-      'Does the document provide sufficient empirical evidence to justify replacing human judges in liability rulings?',
-      'What are the strongest methodological limitations identified in the study on Page 14?',
-      'How does the author resolve the conflict between mathematical consistency and democratic legitimacy?',
-      'Is the 32% variance reduction supported by statistically sound benchmarks across all circuits?',
-    ],
-  },
-  {
-    id: 'doc-triage',
-    name: 'Autonomous_Clinical_Triage.pdf',
-    fileSize: '1.4 MB',
-    fileSizeBytes: 1468006,
-    fileType: 'pdf',
-    pageCount: 18,
-    uploadedAt: 'Yesterday',
-    status: 'ready',
-    summary:
-      'Prospective trial of multi-agent Bayesian triage systems across 4 intensive care networks during peak respiratory surge.',
-    keyClaimsCount: 11,
-    evidencePointsCount: 29,
-    debatesCount: 1,
-    sections: [
-      {
-        id: 'sec-t1',
-        title: 'Clinical Triage Benchmark Protocol',
-        pageNumber: 2,
-        wordCount: 950,
-        claimsCount: 3,
-        summary: 'Protocol definition across 4 tertiary trauma hospitals measuring bed allocation speed.',
-      },
-      {
-        id: 'sec-t2',
-        title: 'Primary Outcomes: Triage Accuracy & Latency',
-        pageNumber: 7,
-        wordCount: 1820,
-        claimsCount: 4,
-        summary: 'Demonstrated 41-minute median reduction in ICU transfer delays with verified Bayesian priors.',
-      },
-      {
-        id: 'sec-t3',
-        title: 'Atypical Presentation & Diagnostic Bias Blind Spots',
-        pageNumber: 12,
-        wordCount: 1530,
-        claimsCount: 3,
-        summary: 'Demonstrated systemic under-triage for comorbid geriatric patients with atypical symptomatology.',
-      },
-    ],
-    suggestedQuestions: [
-      'Does the 41-minute latency reduction outweigh the risk of atypical under-triage?',
-      'Can the trial results be generalized beyond high-resource tertiary trauma hospitals?',
-    ],
-  },
-];
-
-const DEFAULT_EVIDENCE: EvidenceReference[] = [
-  {
-    id: 'ev-1',
-    documentId: 'doc-ai-law',
-    documentName: 'AI_in_HighStakes_Law.pdf',
-    pageNumber: 8,
-    sectionTitle: 'Section 3: Empirical Results',
-    excerpt:
-      'Across 12,000 simulated appellate rulings, autonomous Bayesian priors achieved a 32% reduction in inter-circuit sentencing variance compared to historical judicial panels (p < 0.001).',
-    type: 'evidence',
-    relevanceScore: 96,
-    speakerTarget: 'PRO',
-  },
-  {
-    id: 'ev-2',
-    documentId: 'doc-ai-law',
-    documentName: 'AI_in_HighStakes_Law.pdf',
-    pageNumber: 14,
-    sectionTitle: 'Section 4: Out-of-Distribution Failures',
-    excerpt:
-      'When presented with non-precedential novel fact patterns (black-swan socio-legal dilemmas), the neural classifier produced confidence scores exceeding 91% on objectively erroneous statutory interpretations.',
-    type: 'limitation',
-    relevanceScore: 94,
-    speakerTarget: 'CON',
-  },
-  {
-    id: 'ev-3',
-    documentId: 'doc-ai-law',
-    documentName: 'AI_in_HighStakes_Law.pdf',
-    pageNumber: 11,
-    sectionTitle: 'Section 3.2: Runtime Invariant Verification',
-    excerpt:
-      'Coupling generative deliberation with SMT constraint solvers guaranteed zero violation of codified statutory floor penalties across the affirmative test corpus.',
-    type: 'claim',
-    relevanceScore: 89,
-    speakerTarget: 'PRO',
-  },
-  {
-    id: 'ev-4',
-    documentId: 'doc-ai-law',
-    documentName: 'AI_in_HighStakes_Law.pdf',
-    pageNumber: 19,
-    sectionTitle: 'Section 5: Constitutional Recourse',
-    excerpt:
-      'Mathematical consistency cannot substitute for civic legitimacy; algorithmic recourse lacks the non-delegable moral accountability demanded by procedural due process.',
-    type: 'counterargument',
-    relevanceScore: 92,
-    speakerTarget: 'CON',
-  },
-  {
-    id: 'ev-5',
-    documentId: 'doc-ai-law',
-    documentName: 'AI_in_HighStakes_Law.pdf',
-    pageNumber: 23,
-    sectionTitle: 'Section 6: Concluding Framework',
-    excerpt:
-      'The data indicates optimal societal outcomes emerge when autonomous calculation handles bounded formal checks, while final normative discretionary decisions remain with human tribunals.',
-    type: 'uncertainty',
-    relevanceScore: 95,
-  },
-];
+const DEFAULT_EVIDENCE: EvidenceReference[] = [];
 
 const DocumentContext = createContext<DocumentContextType | undefined>(undefined);
 
 export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [documents, setDocuments] = useState<DocumentMetadata[]>(DEFAULT_DOCUMENTS);
-  const [activeDocumentId, setActiveDocumentId] = useState<string>('doc-ai-law');
-  const [activeQuestion, setActiveQuestion] = useState<string>(
-    'Does the document provide sufficient empirical evidence to justify replacing human judges in liability rulings?'
-  );
+  const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
+  const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
+  const [activeKnowledge, setActiveKnowledge] = useState<any | null>(null);
+  const [activeQuestion, setActiveQuestion] = useState<string>('');
   const [selectedMode, setSelectedMode] = useState<DebateMode>('claim-challenge');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [processingStage, setProcessingStage] = useState<string>('DOCUMENT READY');
+  const [processingStage, setProcessingStage] = useState<string>('IDLE');
+
+  // Load persistent documents from FastAPI backend
+  useEffect(() => {
+    let isMounted = true;
+    async function loadBackendDocuments() {
+      try {
+        const backendDocs = await debateApi.getDocuments();
+        if (backendDocs && backendDocs.length > 0 && isMounted) {
+          setDocuments(backendDocs);
+          setActiveDocumentId(backendDocs[0].id);
+          if (backendDocs[0].suggestedQuestions?.length > 0) {
+            setActiveQuestion(backendDocs[0].suggestedQuestions[0]);
+          }
+        } else if (isMounted) {
+          setDocuments([]);
+          setActiveDocumentId(null);
+          setActiveKnowledge(null);
+          setActiveQuestion('');
+        }
+      } catch (err) {
+        console.warn('Backend documents API unavailable, initializing empty library:', err);
+        if (isMounted) {
+          setDocuments([]);
+          setActiveDocumentId(null);
+          setActiveKnowledge(null);
+          setActiveQuestion('');
+        }
+      }
+    }
+    loadBackendDocuments();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Fetch whole-document knowledge whenever active document changes
+  useEffect(() => {
+    if (!activeDocumentId) {
+      setActiveKnowledge(null);
+      return;
+    }
+    let isMounted = true;
+    debateApi
+      .getDocumentKnowledge(activeDocumentId)
+      .then((k) => {
+        if (isMounted) setActiveKnowledge(k);
+      })
+      .catch((e) => {
+        console.warn('Could not fetch whole-document knowledge:', e);
+        if (isMounted) setActiveKnowledge(null);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [activeDocumentId]);
 
   const activeDocument =
-    documents.find((d) => d.id === activeDocumentId) || documents[0] || DEFAULT_DOCUMENTS[0];
+    (activeDocumentId ? documents.find((d) => d.id === activeDocumentId) : null) ||
+    (documents.length > 0 ? documents[0] : null);
 
   const selectDocument = useCallback(
     (id: string) => {
       const doc = documents.find((d) => d.id === id);
       if (doc) {
         setActiveDocumentId(id);
-        if (doc.suggestedQuestions.length > 0) {
+        if (doc.suggestedQuestions && doc.suggestedQuestions.length > 0) {
           setActiveQuestion(doc.suggestedQuestions[0]);
         }
       }
@@ -246,105 +106,110 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [documents]
   );
 
+  const queryKnowledge = useCallback(
+    async (query: string): Promise<any> => {
+      if (!activeDocumentId) {
+        return null;
+      }
+      return await debateApi.queryDocument(activeDocumentId, query);
+    },
+    [activeDocumentId]
+  );
+
   const uploadDocument = useCallback(async (file: File): Promise<DocumentMetadata> => {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext);
+
     setIsProcessing(true);
-    setProcessingStage('READING DOCUMENT...');
+    const stageTimers: ReturnType<typeof setTimeout>[] = [];
 
-    await new Promise((r) => setTimeout(r, 600));
-    setProcessingStage('EXTRACTING TEXT & SECTIONS...');
+    if (isImage) {
+      setProcessingStage('Validating image & orientation...');
+      stageTimers.push(setTimeout(() => setProcessingStage('Extracting text via RapidOCR...'), 1500));
+      stageTimers.push(setTimeout(() => setProcessingStage('Running Qwen multimodal vision analysis...'), 4000));
+      stageTimers.push(setTimeout(() => setProcessingStage('Structuring visual evidence & indexing...'), 40000));
+    } else {
+      setProcessingStage('Uploading file...');
+      stageTimers.push(setTimeout(() => setProcessingStage('Extracting PDF pages...'), 2000));
+      stageTimers.push(setTimeout(() => setProcessingStage('Generating embeddings...'), 25000));
+      stageTimers.push(setTimeout(() => setProcessingStage('Indexing evidence...'), 55000));
+      stageTimers.push(setTimeout(() => setProcessingStage('Building document knowledge...'), 85000));
+    }
 
-    await new Promise((r) => setTimeout(r, 700));
-    setProcessingStage('IDENTIFYING CLAIMS & EVIDENCE...');
-
-    await new Promise((r) => setTimeout(r, 600));
-    setProcessingStage('DOCUMENT READY');
-
-    const ext = file.name.split('.').pop()?.toLowerCase() || 'pdf';
-    const type = ext === 'docx' ? 'docx' : ext === 'txt' ? 'txt' : 'pdf';
-    const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-    const estimatedPages = Math.max(1, Math.round(file.size / (60 * 1024)));
-
-    const newDoc: DocumentMetadata = {
-      id: `doc-${Date.now()}`,
-      name: file.name,
-      fileSize: `${sizeMb} MB`,
-      fileSizeBytes: file.size,
-      fileType: type,
-      pageCount: estimatedPages,
-      uploadedAt: 'Just now',
-      status: 'ready',
-      summary: `Uploaded document "${file.name}". Ready for evidence-grounded dialectic analysis between opposing AI reasoning systems.`,
-      keyClaimsCount: Math.min(18, Math.max(6, Math.round(estimatedPages * 0.7))),
-      evidencePointsCount: Math.min(45, Math.max(12, Math.round(estimatedPages * 1.6))),
-      debatesCount: 0,
-      sections: [
-        {
-          id: 'sec-u1',
-          title: 'Primary Thesis & Abstract',
-          pageNumber: 1,
-          wordCount: 650,
-          claimsCount: 2,
-          summary: 'Core proposition and problem definition extracted from introductory passages.',
-        },
-        {
-          id: 'sec-u2',
-          title: 'Empirical Findings & Data Records',
-          pageNumber: Math.max(2, Math.round(estimatedPages * 0.4)),
-          wordCount: 1400,
-          claimsCount: 5,
-          summary: 'Quantitative benchmarks and observed effects extracted from central tables.',
-        },
-        {
-          id: 'sec-u3',
-          title: 'Stated Constraints & Critical Limitations',
-          pageNumber: Math.max(3, Math.round(estimatedPages * 0.75)),
-          wordCount: 1100,
-          claimsCount: 4,
-          summary: 'Author-acknowledged bounds, sampling constraints, and scope limitations.',
-        },
-      ],
-      suggestedQuestions: [
-        `Does "${file.name}" provide sufficient evidence to support its central claims?`,
-        `What are the most significant methodological weaknesses or limitations stated in this document?`,
-        `How reliably can the findings in "${file.name}" be applied beyond its specific test conditions?`,
-      ],
+    const clearTimers = () => {
+      stageTimers.forEach((t) => clearTimeout(t));
     };
 
-    setDocuments((prev) => [newDoc, ...prev]);
-    setActiveDocumentId(newDoc.id);
-    setActiveQuestion(newDoc.suggestedQuestions[0]);
-    setIsProcessing(false);
-
-    return newDoc;
+    try {
+      const response = await debateApi.uploadDocument(file);
+      clearTimers();
+      const newDoc: DocumentMetadata = response.document;
+      setDocuments((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
+      setActiveDocumentId(newDoc.id);
+      if (newDoc.suggestedQuestions && newDoc.suggestedQuestions.length > 0) {
+        setActiveQuestion(newDoc.suggestedQuestions[0]);
+      }
+      setIsProcessing(false);
+      setProcessingStage(isImage ? 'Image ready for debate' : 'Document ready');
+      return newDoc;
+    } catch (err: any) {
+      clearTimers();
+      setIsProcessing(false);
+      const detailMsg =
+        err?.response?.data?.detail ||
+        err?.message ||
+        'Failed to upload and process document on backend server.';
+      setProcessingStage(`Error: ${detailMsg}`);
+      console.error('Document upload failed on backend:', err);
+      throw new Error(detailMsg);
+    }
   }, []);
 
   const replaceActiveDocument = useCallback(async (file: File): Promise<DocumentMetadata> => {
     return uploadDocument(file);
   }, [uploadDocument]);
 
-  const removeDocument = useCallback((id: string) => {
-    setDocuments((prev) => {
-      const filtered = prev.filter((d) => d.id !== id);
-      if (filtered.length === 0) return DEFAULT_DOCUMENTS;
-      return filtered;
-    });
-    if (activeDocumentId === id) {
-      setDocuments((prev) => {
-        const next = prev.find((d) => d.id !== id) || DEFAULT_DOCUMENTS[0];
-        setActiveDocumentId(next.id);
-        if (next.suggestedQuestions.length > 0) {
-          setActiveQuestion(next.suggestedQuestions[0]);
-        }
-        return prev;
-      });
+  const removeDocument = useCallback(async (id: string) => {
+    try {
+      await debateApi.deleteDocument(id);
+    } catch (err) {
+      console.warn('Backend delete document failed:', err);
     }
+    setDocuments((prev) => {
+      const remaining = prev.filter((d) => d.id !== id);
+      if (activeDocumentId === id) {
+        if (remaining.length > 0) {
+          setActiveDocumentId(remaining[0].id);
+          setActiveQuestion(remaining[0].suggestedQuestions?.[0] || '');
+        } else {
+          setActiveDocumentId(null);
+          setActiveKnowledge(null);
+          setActiveQuestion('');
+        }
+      }
+      return remaining;
+    });
   }, [activeDocumentId]);
+
+  const clearAllDocuments = useCallback(async () => {
+    try {
+      await debateApi.clearAllDocuments();
+    } catch (err) {
+      console.warn('Backend clear all documents failed:', err);
+    }
+    setDocuments([]);
+    setActiveDocumentId(null);
+    setActiveKnowledge(null);
+    setActiveQuestion('');
+  }, []);
 
   return (
     <DocumentContext.Provider
       value={{
         activeDocument,
         documents,
+        activeKnowledge,
+        queryKnowledge,
         activeQuestion,
         setActiveQuestion,
         selectedMode,
@@ -354,6 +219,7 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         uploadDocument,
         replaceActiveDocument,
         removeDocument,
+        clearAllDocuments,
         selectDocument,
         evidenceItems: DEFAULT_EVIDENCE,
       }}

@@ -39,8 +39,9 @@ export const QuickDebateInput: React.FC = () => {
     if (e) e.preventDefault();
     const query = question.trim() || activeQuestion;
     setActiveQuestion(query);
+    const docQuery = activeDocument ? `doc=${encodeURIComponent(activeDocument.id)}&` : '';
     navigate(
-      `/debate?doc=${encodeURIComponent(activeDocument.id)}&question=${encodeURIComponent(
+      `/debate?${docQuery}question=${encodeURIComponent(
         query
       )}&mode=${selectedMode}`
     );
@@ -126,42 +127,46 @@ export const QuickDebateInput: React.FC = () => {
             )}
 
             {/* Active Document Grounding Badge */}
-            <div className="mb-5 p-3.5 rounded-2xl bg-slate-100/70 dark:bg-slate-900/60 border border-slate-200/80 dark:border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500 shrink-0">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">
-                      {activeDocument.name}
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                      ({activeDocument.pageCount} pages • {activeDocument.keyClaimsCount} key claims)
-                    </span>
+            {activeDocument ? (
+              <div className="mb-5 p-3.5 rounded-2xl bg-slate-100/70 dark:bg-slate-900/60 border border-slate-200/80 dark:border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500 shrink-0">
+                    <FileText className="w-4 h-4" />
                   </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">
-                    {activeDocument.summary}
-                  </p>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">
+                        {activeDocument.name}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                        ({activeDocument.pageCount} pages • {activeDocument.keyClaimsCount} key claims)
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">
+                      {activeDocument.summary}
+                    </p>
+                  </div>
                 </div>
-              </div>
 
-              {/* Quick sample switcher */}
-              <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">Switch:</span>
-                <select
-                  value={activeDocument.id}
-                  onChange={(e) => selectDocument(e.target.value)}
-                  className="text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                >
-                  {documents.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                {/* Quick sample switcher */}
+                {documents.length > 1 && (
+                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                    <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">Switch:</span>
+                    <select
+                      value={activeDocument.id}
+                      onChange={(e) => selectDocument(e.target.value)}
+                      className="text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      {documents.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
-            </div>
+            ) : null}
 
             {/* Mode Selector Tabs */}
             <div className="mb-4">
@@ -246,7 +251,7 @@ export const QuickDebateInput: React.FC = () => {
                       'What are the strongest methodological limitations?',
                       'Which claims lack sufficient supporting evidence?',
                       'What are the strongest arguments against the author\'s conclusion?',
-                      ...(activeDocument.suggestedQuestions || []),
+                      ...(activeDocument?.suggestedQuestions || []),
                     ].slice(0, 5).map((suggestion) => (
                       <button
                         key={suggestion}

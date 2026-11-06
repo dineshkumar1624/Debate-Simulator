@@ -1,4 +1,41 @@
-export type DocumentType = 'pdf' | 'docx' | 'txt' | 'pptx' | 'csv' | 'md';
+export type DocumentType = 'pdf' | 'docx' | 'txt' | 'pptx' | 'csv' | 'md' | 'png' | 'jpg' | 'jpeg' | 'webp' | 'bmp';
+
+export interface OCRLine {
+  text: string;
+  confidence: number;
+  box?: number[][];
+}
+
+export interface VisualEvidenceItem {
+  id: string;
+  label: string;
+  type: string;
+  location: string;
+  content: string;
+  confidence: number;
+}
+
+export interface ImageUnderstanding {
+  image_id: string;
+  filename: string;
+  dimensions: {
+    width: number;
+    height: number;
+    format: string;
+    mode: string;
+    megapixels: number;
+    aspect_ratio: string;
+  };
+  summary: string;
+  ocr_text: string;
+  ocr_lines: OCRLine[];
+  visual_observations: string[];
+  key_entities: string[];
+  numerical_values: string[];
+  relationships: string[];
+  evidence_items: VisualEvidenceItem[];
+  uncertainties: string[];
+}
 
 export type DocumentProcessingStatus =
   | 'idle'

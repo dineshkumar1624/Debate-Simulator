@@ -11,7 +11,7 @@ import { useDocument } from '../context/DocumentContext';
 
 export const DocumentsPage: React.FC = () => {
   const navigate = useNavigate();
-  const { documents, selectDocument, activeDocument } = useDocument();
+  const { documents, selectDocument, activeDocument, clearAllDocuments } = useDocument();
 
   const handleStartDebateWithDoc = (docId: string) => {
     selectDocument(docId);
@@ -36,7 +36,7 @@ export const DocumentsPage: React.FC = () => {
 
       {/* 2. Document Upload Area */}
       <div className="space-y-3">
-        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">
+        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
           ADD A NEW DOCUMENT
         </h3>
         <DocumentUploader
@@ -49,11 +49,22 @@ export const DocumentsPage: React.FC = () => {
 
       {/* 3. Document Repository List */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">
-            LOADED DOCUMENTS ({documents.length})
-          </h3>
-          <span className="text-[11px] font-mono text-slate-500">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              LOADED DOCUMENTS ({documents.length})
+            </h3>
+            {documents.length > 0 && (
+              <button
+                type="button"
+                onClick={clearAllDocuments}
+                className="px-2.5 py-1 text-[10px] font-mono font-semibold uppercase rounded-lg border border-rose-300 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all cursor-pointer shadow-xs"
+              >
+                Clear All Documents
+              </button>
+            )}
+          </div>
+          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
             Select any document to initiate an adversarial inquiry
           </span>
         </div>
@@ -61,21 +72,25 @@ export const DocumentsPage: React.FC = () => {
         {documents.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {documents.map((doc) => {
-              const isCurrent = doc.id === activeDocument.id;
+              const isCurrent = Boolean(activeDocument && doc.id === activeDocument.id);
               return (
                 <div
                   key={doc.id}
-                  className={`rounded-3xl border p-5 sm:p-6 backdrop-blur-2xl transition-all shadow-lg flex flex-col justify-between ${
+                  className={`rounded-3xl border p-5 sm:p-6 backdrop-blur-2xl transition-all shadow-sm hover:shadow-md flex flex-col justify-between ${
                     isCurrent
-                      ? 'border-indigo-500/50 bg-gradient-to-br from-indigo-950/40 via-slate-900/60 to-black/80 shadow-[0_0_30px_rgba(99,102,241,0.2)]'
-                      : 'border-slate-200/80 dark:border-white/10 bg-white/90 dark:bg-[#070b18]/80 hover:border-indigo-400/40'
+                      ? 'border-indigo-500/80 dark:border-indigo-500/50 bg-gradient-to-br from-indigo-50/90 via-white to-sky-50/60 dark:from-indigo-950/40 dark:via-slate-900/60 dark:to-black/80 shadow-md shadow-indigo-500/10 dark:shadow-[0_0_30px_rgba(99,102,241,0.2)] ring-1 ring-indigo-500/30'
+                      : 'border-slate-200/90 dark:border-white/10 bg-white/95 dark:bg-[#070b18]/80 hover:border-indigo-300 dark:hover:border-indigo-400/40'
                   }`}
                 >
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-400/30 flex items-center justify-center shrink-0 text-indigo-400">
-                          <FileText className="w-5 h-5 text-indigo-300" />
+                        <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 shadow-xs ${
+                          isCurrent
+                            ? 'bg-indigo-600 text-white shadow-indigo-500/20'
+                            : 'bg-indigo-50 dark:bg-indigo-500/15 border border-indigo-200 dark:border-indigo-400/30 text-indigo-600 dark:text-indigo-400'
+                        }`}>
+                          <FileText className={`w-5 h-5 ${isCurrent ? 'text-white' : 'text-indigo-600 dark:text-indigo-300'}`} />
                         </div>
                         <div className="min-w-0">
                           <h4 className="text-sm sm:text-base font-mono font-bold text-slate-900 dark:text-white truncate">
@@ -86,13 +101,13 @@ export const DocumentsPage: React.FC = () => {
                             <span>•</span>
                             <span>{doc.fileSize}</span>
                             <span>•</span>
-                            <span className="text-emerald-400">Ready</span>
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Ready</span>
                           </div>
                         </div>
                       </div>
 
                       {isCurrent && (
-                        <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shrink-0">
+                        <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold uppercase tracking-wider bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-500/40 shrink-0 shadow-xs">
                           ACTIVE
                         </span>
                       )}
@@ -102,17 +117,17 @@ export const DocumentsPage: React.FC = () => {
                       {doc.summary}
                     </p>
 
-                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/60 dark:border-white/10 text-center text-xs font-mono">
-                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30">
-                        <span className="text-[10px] text-slate-400 block">CLAIMS</span>
+                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/80 dark:border-white/10 text-center text-xs font-mono">
+                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200/60 dark:border-white/5">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">CLAIMS</span>
                         <span className="font-bold text-slate-900 dark:text-white">{doc.keyClaimsCount}</span>
                       </div>
-                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30">
-                        <span className="text-[10px] text-slate-400 block">EVIDENCE</span>
+                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200/60 dark:border-white/5">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">EVIDENCE</span>
                         <span className="font-bold text-slate-900 dark:text-white">{doc.evidencePointsCount}</span>
                       </div>
-                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30">
-                        <span className="text-[10px] text-slate-400 block">DEBATES</span>
+                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200/60 dark:border-white/5">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">DEBATES</span>
                         <span className="font-bold text-slate-900 dark:text-white">{doc.debatesCount}</span>
                       </div>
                     </div>
@@ -121,7 +136,7 @@ export const DocumentsPage: React.FC = () => {
                   <div className="flex items-center gap-2 pt-5">
                     <Button
                       onClick={() => handleStartDebateWithDoc(doc.id)}
-                      className="w-full gap-2 font-mono text-xs font-bold bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600"
+                      className="w-full gap-2 font-mono text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20 transition-all"
                     >
                       <span>START DOCUMENT DEBATE</span>
                       <ArrowRight className="w-3.5 h-3.5" />
@@ -133,13 +148,13 @@ export const DocumentsPage: React.FC = () => {
           </div>
         ) : (
           /* Empty state */
-          <div className="rounded-3xl border border-dashed border-white/15 p-12 text-center space-y-4">
-            <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-500/10 border border-indigo-400/20 flex items-center justify-center text-indigo-400">
+          <div className="rounded-3xl border border-dashed border-slate-300 dark:border-white/15 p-12 text-center space-y-4 bg-white/60 dark:bg-transparent">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-500/10 border border-indigo-400/20 flex items-center justify-center text-indigo-500 dark:text-indigo-400">
               <FileText className="w-7 h-7" />
             </div>
             <div>
-              <h4 className="text-base font-mono font-bold text-white">NO DOCUMENTS YET</h4>
-              <p className="text-xs font-mono text-slate-400 mt-1 max-w-sm mx-auto">
+              <h4 className="text-base font-mono font-bold text-slate-900 dark:text-white">NO DOCUMENTS YET</h4>
+              <p className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
                 Upload your first document to start an evidence-grounded debate between opposing AI agents.
               </p>
             </div>

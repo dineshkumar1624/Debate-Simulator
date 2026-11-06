@@ -32,11 +32,11 @@ export const TechnologyPage: React.FC = () => {
       name: 'AI MODELS',
       icon: Cpu,
       color: 'text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-500/40 bg-indigo-50 dark:bg-indigo-950/40',
-      description: 'Multi-provider foundation models selected for complementary reasoning traits.',
+      description: 'Standardized multi-agent architecture with three dedicated foundation models.',
       technologies: [
-        { name: 'OpenAI (GPT-4o)', desc: 'High dialectical agility, structured thesis formulation, and logical rigor.', status: 'Planned' },
-        { name: 'Gemini (1.5/2.0 Pro)', desc: 'Large context retrieval, deep cross-source synthesis, and judicial neutrality.', status: 'Planned' },
-        { name: 'Claude (3.5 Sonnet)', desc: 'Nuanced counterargument generation, fallacy detection, and epistemic calibration.', status: 'Planned' },
+        { name: 'Google Gemma 4 E4B Instruct (PRO)', desc: 'Local Q4_0 GGUF inference via llama.cpp for affirmative thesis & verified evidence.', status: 'Active' },
+        { name: 'Alibaba Qwen 2.5 VL 7B (CON)', desc: 'Local adversarial cross-examination, antithesis, and systemic risk challenge.', status: 'Active' },
+        { name: 'Google Gemini 3.5 Flash (JUDGE)', desc: 'Official Google GenAI API for 9-criteria dialectical scoring and balanced adjudication.', status: 'Active' },
       ],
     },
     {
