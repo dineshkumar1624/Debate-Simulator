@@ -102,8 +102,11 @@ class DebateSessionSchema(BaseModel):
     rounds: List[DebateRoundSchema]
     synthesis: Optional[DebateSynthesisSchema] = None
     errorMessage: Optional[str] = None
+    documentId: Optional[str] = None
     documentName: Optional[str] = None
     documentType: Optional[str] = None
+    sourceScope: Optional[str] = None
+    evidenceMode: Optional[bool] = None
     completedAt: Optional[str] = None
     researchSources: Optional[List[Dict[str, Any]]] = None
 

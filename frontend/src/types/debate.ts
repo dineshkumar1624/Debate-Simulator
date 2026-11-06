@@ -106,8 +106,11 @@ export interface DebateSession {
   synthesis?: DebateSynthesis;
   errorMessage?: string;
   error_message?: string;
+  documentId?: string;
   documentName?: string;
   documentType?: string;
+  sourceScope?: string;
+  evidenceMode?: boolean;
   completedAt?: string;
   startedAtEpochMs?: number;
   completedAtEpochMs?: number;

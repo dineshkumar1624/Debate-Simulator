@@ -453,7 +453,8 @@ def get_active_debate(db: Session = Depends(get_db)):
         .options(
             joinedload(DebateModel.document),
             joinedload(DebateModel.round_records),
-            joinedload(DebateModel.messages)
+            joinedload(DebateModel.messages),
+            joinedload(DebateModel.research_sources)
         )
         .filter(DebateModel.status.in_(["debating", "running", "queued", "evaluating"]))
         .order_by(DebateModel.created_at.desc())
@@ -466,6 +467,9 @@ def get_active_debate(db: Session = Depends(get_db)):
             "status": None,
             "topic": None,
             "rounds": None,
+            "documentId": None,
+            "sourceScope": None,
+            "evidenceMode": None,
             "startedAtEpochMs": None,
             "elapsedSeconds": None,
             "debate": None
@@ -489,12 +493,16 @@ def get_active_debate(db: Session = Depends(get_db)):
         )
 
     formatted_session = _format_debate_session(active_debate)
+    effective_scope = active_debate.source_scope or ("web" if active_debate.document_id is None else "document")
     return {
         "hasActive": True,
         "debateId": active_debate.id,
         "status": active_debate.status,
         "topic": active_debate.topic,
         "rounds": active_debate.rounds,
+        "documentId": active_debate.document_id,
+        "sourceScope": effective_scope,
+        "evidenceMode": bool(active_debate.evidence_mode) if active_debate.evidence_mode is not None else True,
         "startedAtEpochMs": formatted_session.startedAtEpochMs,
         "elapsedSeconds": formatted_session.elapsedSeconds,
         "debate": formatted_session
@@ -502,7 +510,17 @@ def get_active_debate(db: Session = Depends(get_db)):
 
 @router.get("/{debate_id}", response_model=DebateSessionSchema)
 def get_debate(debate_id: str, db: Session = Depends(get_db)):
-    debate = db.query(DebateModel).filter(DebateModel.id == debate_id).first()
+    debate = (
+        db.query(DebateModel)
+        .options(
+            joinedload(DebateModel.document),
+            joinedload(DebateModel.round_records),
+            joinedload(DebateModel.messages),
+            joinedload(DebateModel.research_sources)
+        )
+        .filter(DebateModel.id == debate_id)
+        .first()
+    )
     if not debate:
         raise HTTPException(status_code=404, detail="Debate not found")
     return _format_debate_session(debate)

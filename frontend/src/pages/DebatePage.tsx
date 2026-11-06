@@ -136,12 +136,8 @@ export const DebatePage: React.FC = () => {
     setSelectedMode,
   } = useDocument();
 
-  // Snapshot of document used when active debate was started
-  const [debateDocument, setDebateDocument] = useState<DocumentMetadata | null>(activeDocument);
-
-  useEffect(() => {
-    setDebateDocument(activeDocument);
-  }, [activeDocument]);
+  // Snapshot of document used when active debate was started (null for web debates)
+  const [debateDocument, setDebateDocument] = useState<DocumentMetadata | null>(null);
 
   // Active View Tab on mobile / tablets (chamber vs document)
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<'chamber' | 'document'>('chamber');
@@ -203,6 +199,17 @@ export const DebatePage: React.FC = () => {
   const [hasStarted, setHasStarted] = useState<boolean>(false);
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [expandedArgId, setExpandedArgId] = useState<string | null>(null);
+
+  // Synchronize debateDocument with activeDocument ONLY in setup mode (when no debate is active)
+  useEffect(() => {
+    if (!hasStarted && !activeDebateId) {
+      if (sourceMode === 'document') {
+        setDebateDocument(activeDocument);
+      } else {
+        setDebateDocument(null);
+      }
+    }
+  }, [activeDocument, hasStarted, activeDebateId, sourceMode]);
 
   // Sync activeDebateId with sessionStorage and localStorage only when active
   useEffect(() => {
@@ -276,10 +283,95 @@ export const DebatePage: React.FC = () => {
         setQuestion(deb.topic);
         setLiveSession(deb);
 
+        // 1. Authoritative Evidence Mode & Source Restoration from backend record
+        const isWeb =
+          deb.sourceScope === 'web' ||
+          deb.config?.sourceScope === 'web' ||
+          (!deb.documentId && !deb.config?.documentId && ((deb.researchSources && deb.researchSources.length > 0) || !deb.documentName));
+
+        if (isWeb) {
+          setSourceMode('web');
+          setDebateDocument(null);
+          // Restore research sources into researchResponse for the shared evidence drawer
+          if (deb.researchSources && deb.researchSources.length > 0) {
+            setResearchResponse({
+              topic: deb.topic,
+              query: deb.topic,
+              sources: deb.researchSources.map((s: any) => ({
+                id: s.id || String(Math.random()),
+                title: s.title || '',
+                url: s.url || '',
+                snippet: s.snippet || s.content || '',
+                publishedDate: s.publishedDate || s.published_date || '',
+                retrievalTimestamp: s.retrievalTimestamp || '',
+              })),
+              evidenceItems: [],
+              stages: [],
+              indexedChunks: deb.researchSources.length,
+              status: 'completed',
+              message: 'Restored from debate record',
+            });
+          }
+        } else {
+          setSourceMode('document');
+          const targetDocId = deb.documentId || deb.config?.documentId;
+          if (targetDocId) {
+            // Find in current documents or fetch directly from backend
+            let matchedDoc: DocumentMetadata | null = documents.find((d) => d.id === targetDocId) || null;
+            if (!matchedDoc) {
+              try {
+                const fetchedDoc = await debateApi.getDocument(targetDocId);
+                if (fetchedDoc && fetchedDoc.id) {
+                  matchedDoc = fetchedDoc;
+                }
+              } catch (_) {}
+            }
+            if (!matchedDoc) {
+              try {
+                const allDocs = await debateApi.getDocuments();
+                matchedDoc = allDocs.find((d) => d.id === targetDocId) || null;
+              } catch (_) {}
+            }
+
+            if (matchedDoc) {
+              setDebateDocument(matchedDoc);
+              selectDocument(matchedDoc.id);
+            } else {
+              // Exact associated document not found: Show clear missing state, NEVER silently substitute another PDF
+              setDebateDocument({
+                id: targetDocId,
+                name: deb.documentName || deb.config?.documentName || 'Associated Document',
+                fileType: (deb.documentType || deb.config?.documentType || 'pdf') as any,
+                fileSize: '0 KB',
+                fileSizeBytes: 0,
+                pageCount: 0,
+                uploadedAt: deb.createdAt || '',
+                status: 'error',
+                summary: 'Document record missing from repository',
+                keyClaimsCount: 0,
+                evidencePointsCount: 0,
+                debatesCount: 0,
+                sections: [],
+                suggestedQuestions: [],
+                isMissing: true,
+              });
+            }
+          } else if (deb.documentName || deb.config?.documentName) {
+            const targetName = deb.documentName || deb.config?.documentName;
+            const matchedDoc = documents.find((d) => d.name === targetName) || null;
+            if (matchedDoc) {
+              setDebateDocument(matchedDoc);
+              selectDocument(matchedDoc.id);
+            } else {
+              setDebateDocument(null);
+            }
+          } else {
+            setDebateDocument(null);
+          }
+        }
+
         if (deb.config) {
           setRounds(deb.config.rounds || 3);
-          if (deb.config.sourceScope === 'web') setSourceMode('web');
-          else if (deb.config.sourceScope === 'document') setSourceMode('document');
         }
 
         // Authoritative timestamp extraction (UTC-safe, zero timezone drift)
@@ -419,6 +511,15 @@ export const DebatePage: React.FC = () => {
     }
     return [];
   }, [liveSession, debateDocument]);
+
+  // Single authoritative source of truth for evidence mode in active/running/replay debate
+  const isCurrentDebateWeb = useMemo(() => {
+    if (sourceMode === 'web') return true;
+    if (liveSession?.config?.sourceScope === 'web' || (liveSession as any)?.sourceScope === 'web') return true;
+    if (liveSession?.researchSources && liveSession.researchSources.length > 0 && !liveSession?.config?.documentId && !(liveSession as any)?.documentId) return true;
+    if (!debateDocument && !liveSession?.config?.documentId && !(liveSession as any)?.documentId) return true;
+    return false;
+  }, [sourceMode, liveSession, debateDocument]);
 
   // Dynamic calculation of debate rounds and steps
   const activeRounds = useMemo(() => {
@@ -2158,10 +2259,10 @@ export const DebatePage: React.FC = () => {
           <div className="rounded-2xl p-4 sm:p-5 border border-indigo-200/90 dark:border-indigo-500/30 bg-white/95 dark:bg-[#070a16]/95 backdrop-blur-xl shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div className="space-y-1 min-w-0">
               <div className="flex items-center gap-2 text-xs font-mono">
-                {sourceMode === 'web' || (!debateDocument && ((liveSession?.researchSources && liveSession.researchSources.length > 0) || (researchResponse?.sources && researchResponse.sources.length > 0))) ? (
+                {isCurrentDebateWeb ? (
                   <span className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5 uppercase">
                     <Globe className="w-3.5 h-3.5 text-cyan-500" />
-                    <span>WEB RESEARCH GROUNDED: {(liveSession?.researchSources || researchResponse?.sources || []).length} SOURCES</span>
+                    <span>WEB RESEARCH GROUNDED: {(liveSession?.researchSources || researchResponse?.sources || []).length} Sources</span>
                   </span>
                 ) : (
                   <span className="font-bold text-indigo-700 dark:text-indigo-400 flex items-center gap-1.5 uppercase">
@@ -2170,7 +2271,7 @@ export const DebatePage: React.FC = () => {
                   </span>
                 )}
                 <span className="text-slate-400">•</span>
-                {debateDocument && (
+                {!isCurrentDebateWeb && debateDocument && !debateDocument.isMissing && (
                   <>
                     <span className="text-slate-500 dark:text-slate-400">{debateDocument?.pageCount || 0} pages</span>
                     <span className="text-slate-400">•</span>
@@ -2312,7 +2413,7 @@ export const DebatePage: React.FC = () => {
                   : 'text-slate-600 dark:text-slate-400 hover:text-white'
               }`}
             >
-              {sourceMode === 'web' || (!debateDocument && ((liveSession?.researchSources && liveSession.researchSources.length > 0) || (researchResponse?.sources && researchResponse.sources.length > 0)))
+              {isCurrentDebateWeb
                 ? 'Web Evidence Sources'
                 : `Document Source (p. ${viewerTargetPage})`}
             </button>
@@ -2327,15 +2428,8 @@ export const DebatePage: React.FC = () => {
                 activeWorkspaceTab === 'document' ? 'block' : 'hidden lg:block'
               }`}
             >
-              {debateDocument ? (
-                <DocumentViewer
-                  document={debateDocument}
-                  evidenceItems={evidenceItems}
-                  activeEvidenceId={activeEvidenceHighlight}
-                  targetPage={viewerTargetPage}
-                  className="border-indigo-500/20 shadow-xl"
-                />
-              ) : (liveSession?.researchSources && liveSession.researchSources.length > 0) || (researchResponse?.sources && researchResponse.sources.length > 0) ? (
+              {isCurrentDebateWeb ? (
+                /* WEB RESEARCH EVIDENCE SOURCES */
                 <div className="rounded-3xl border border-cyan-500/30 bg-white/95 dark:bg-[#070b18]/95 p-5 shadow-xl space-y-4">
                   <div className="flex items-center justify-between pb-3 border-b border-cyan-500/20">
                     <div className="flex items-center gap-2">
@@ -2357,64 +2451,96 @@ export const DebatePage: React.FC = () => {
                   </div>
 
                   <div className="space-y-3 max-h-[560px] overflow-y-auto pr-1">
-                    {(liveSession?.researchSources || researchResponse?.sources || []).map((source: any, idx: number) => {
-                      let hostname = '';
-                      try {
-                        hostname = new URL(source.url).hostname.replace('www.', '');
-                      } catch (_) {
-                        hostname = source.source || 'Web Source';
-                      }
+                    {(liveSession?.researchSources || researchResponse?.sources || []).length > 0 ? (
+                      (liveSession?.researchSources || researchResponse?.sources || []).map((source: any, idx: number) => {
+                        let hostname = '';
+                        try {
+                          hostname = new URL(source.url).hostname.replace('www.', '');
+                        } catch (_) {
+                          hostname = source.source || 'Web Source';
+                        }
 
-                      return (
-                        <div
-                          key={source.id || idx}
-                          className="p-3.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0A0F1E] space-y-2 hover:border-cyan-400/40 transition-colors font-mono"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
-                              {hostname}
-                            </span>
-                            {source.published_date && (
-                              <span className="text-[10px] text-slate-400">
-                                {source.published_date}
+                        return (
+                          <div
+                            key={source.id || idx}
+                            className="p-3.5 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0A0F1E] space-y-2 hover:border-cyan-400/40 transition-colors font-mono"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
+                                {hostname}
                               </span>
+                              {(source.publishedDate || source.published_date) && (
+                                <span className="text-[10px] text-slate-400">
+                                  {source.publishedDate || source.published_date}
+                                </span>
+                              )}
+                            </div>
+
+                            <h5 className="text-xs font-bold text-slate-900 dark:text-white leading-snug">
+                              {source.title}
+                            </h5>
+
+                            {(source.snippet || source.claim) && (
+                              <p className="text-[11px] text-slate-600 dark:text-slate-300 italic leading-relaxed line-clamp-3">
+                                "{source.snippet || source.claim}"
+                              </p>
+                            )}
+
+                            {source.url && (
+                              <div className="pt-1 flex items-center justify-between">
+                                <a
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-[11px] text-cyan-600 dark:text-cyan-400 hover:underline"
+                                >
+                                  <span>Inspect Source Article</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              </div>
                             )}
                           </div>
-
-                          <h5 className="text-xs font-bold text-slate-900 dark:text-white leading-snug">
-                            {source.title}
-                          </h5>
-
-                          {(source.snippet || source.claim) && (
-                            <p className="text-[11px] text-slate-600 dark:text-slate-300 italic leading-relaxed line-clamp-3">
-                              "{source.snippet || source.claim}"
-                            </p>
-                          )}
-
-                          {source.url && (
-                            <div className="pt-1 flex items-center justify-between">
-                              <a
-                                href={source.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-[11px] text-cyan-600 dark:text-cyan-400 hover:underline"
-                              >
-                                <span>Inspect Source Article</span>
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    ) : (
+                      <div className="p-4 rounded-2xl border border-dashed border-cyan-300 dark:border-cyan-500/30 text-center text-xs font-mono text-slate-500">
+                        Gathering online research evidence for active debate...
+                      </div>
+                    )}
                   </div>
                 </div>
+              ) : debateDocument ? (
+                debateDocument.isMissing ? (
+                  /* CLEAR MISSING DOCUMENT STATE - REQUIREMENT 3 */
+                  <div className="rounded-3xl border border-rose-300 dark:border-rose-500/30 bg-rose-50/60 dark:bg-rose-950/20 p-6 text-center space-y-3 shadow-xl">
+                    <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500 mx-auto">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-mono font-bold text-slate-900 dark:text-white">
+                        Associated Document Not Found
+                      </h4>
+                      <p className="text-xs text-slate-600 dark:text-slate-400 max-w-sm mx-auto">
+                        The original document associated with this debate could not be found in the repository. Unrelated documents have not been substituted.
+                      </p>
+                    </div>
+                    <div className="pt-2 text-[11px] font-mono text-slate-400">
+                      Document ID: {debateDocument.id}
+                    </div>
+                  </div>
+                ) : (
+                  <DocumentViewer
+                    document={debateDocument}
+                    evidenceItems={evidenceItems}
+                    activeEvidenceId={activeEvidenceHighlight}
+                    targetPage={viewerTargetPage}
+                    className="border-indigo-500/20 shadow-xl"
+                  />
+                )
               ) : (
-                <div className="rounded-3xl border border-dashed border-white/10 bg-[#070b18]/60 p-12 text-center text-slate-400 space-y-3">
-                  <FileText className="w-8 h-8 mx-auto text-slate-500" />
-                  <h4 className="text-sm font-bold text-white">NO DOCUMENT LOADED</h4>
-                  <p className="text-xs font-mono max-w-sm mx-auto">
-                    Upload a PDF document or conduct web research to inspect evidence.
+                <div className="rounded-3xl border border-slate-200 dark:border-white/10 bg-white/95 dark:bg-[#070b18]/95 p-6 text-center space-y-2 shadow-xl">
+                  <p className="text-xs font-mono text-slate-500">
+                    No document associated with this debate session.
                   </p>
                 </div>
               )}
@@ -3023,12 +3149,35 @@ export const DebatePage: React.FC = () => {
                     <div className="p-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-500/30 text-xs space-y-2">
                       <span className="font-mono font-bold uppercase text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
                         <FileText className="w-3.5 h-3.5" />
-                        {debateDocument && ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes((debateDocument.fileType || '').toLowerCase())
+                        {isCurrentDebateWeb
+                          ? 'Web Research Evidence Citations:'
+                          : debateDocument && ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes((debateDocument.fileType || '').toLowerCase())
                           ? 'Visual Evidence Citations (Click to inspect):'
                           : 'Document Source References (Click to inspect page):'}
                       </span>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
-                        {debateTimeline.length > 0 ? (
+                        {isCurrentDebateWeb ? (
+                          (liveSession?.researchSources || researchResponse?.sources || []).length > 0 ? (
+                            (liveSession?.researchSources || researchResponse?.sources || []).map((s: any, idx: number) => (
+                              <a
+                                key={s.id || idx}
+                                href={s.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center justify-between p-2 rounded-lg bg-white/70 dark:bg-black/30 border border-slate-200 dark:border-white/10 hover:border-cyan-400 text-left transition-all"
+                              >
+                                <span className="text-slate-700 dark:text-slate-300 truncate font-mono text-[11px]">
+                                  [Source {idx + 1}]: {s.title}
+                                </span>
+                                <ExternalLink className="w-3 h-3 text-cyan-500 shrink-0 ml-1.5" />
+                              </a>
+                            ))
+                          ) : (
+                            <div className="col-span-2 text-slate-400 italic">
+                              Web research citations will appear here once debater turns are rendered.
+                            </div>
+                          )
+                        ) : debateTimeline.length > 0 ? (
                           debateTimeline
                             .map((t, idx) => (
                               <button

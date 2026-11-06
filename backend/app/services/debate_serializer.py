@@ -1,4 +1,5 @@
 import uuid
+import json
 from typing import List, Dict, Any, Optional
 from ..models.debate import DebateModel, DebateRoundModel, DebateMessageModel, JudgeEvaluationModel
 from ..schemas.debate import (
@@ -224,8 +225,11 @@ def format_debate_session(debate: DebateModel) -> DebateSessionSchema:
         rounds=round_schemas,
         synthesis=synthesis,
         errorMessage=debate.error_message,
+        documentId=debate.document_id,
         documentName=doc_name,
         documentType=doc_type,
+        sourceScope=debate.source_scope or ("web" if (hasattr(debate, "research_sources") and debate.research_sources and len(debate.research_sources) > 0) else "document"),
+        evidenceMode=bool(debate.evidence_mode) if debate.evidence_mode is not None else True,
         researchSources=res_sources if res_sources else None
     )
 

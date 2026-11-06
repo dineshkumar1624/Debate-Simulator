@@ -67,6 +67,9 @@ export const debateApi = {
     status?: string | null;
     topic?: string | null;
     rounds?: number | null;
+    documentId?: string | null;
+    sourceScope?: string | null;
+    evidenceMode?: boolean | null;
     debate?: DebateSession | null;
   }> {
     const response = await apiClient.get<any>('/debates/active');

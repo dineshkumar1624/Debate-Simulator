@@ -90,6 +90,7 @@ export interface DocumentMetadata {
   debatesCount: number;
   sections: DocumentSection[];
   suggestedQuestions: string[];
+  isMissing?: boolean;
 }
 
 export type DebateMode = 'claim-challenge' | 'critical-review' | 'balanced-analysis';
