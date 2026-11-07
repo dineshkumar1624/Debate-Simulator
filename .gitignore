@@ -1,9 +1,9 @@
 # =============================================================================
-# Git Ignore - AI Debate Simulator
+# Git Ignore - AI Debate Simulator (Full-Stack Multi-Agent AI Application)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. Environment Variables & Secrets (Prevent credential leakage)
+# 1. Environment Variables & Credentials (Security & Secrets)
 # -----------------------------------------------------------------------------
 .env
 .env.*
@@ -13,44 +13,71 @@
 .env.production.local
 **/.env
 **/.env.*
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
 !.env.example
 !**/.env.example
 
 # -----------------------------------------------------------------------------
-# 2. SQLite Databases & Transaction Journals
+# 2. SQLite Databases, Transaction Journals & Backups
 # -----------------------------------------------------------------------------
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
 *.sqlite
 *.sqlite3
+**/*.sqlite
+**/*.sqlite3
 *.backup
 *.backup*
+**/*.backup
+**/*.backup*
 *.bak
 *.bak*
+**/*.bak*
 *.old
 *.orig
+**/*.old
+**/*.orig
+*.patch
 debate_simulator.db*
 **/debate_simulator.db*
+backend/debate_simulator.db*
 
 # -----------------------------------------------------------------------------
-# 3. Vector Database Storage (Embedded Qdrant & Lock Files)
+# 3. Vector Database Storage (Qdrant Embedded, Segment Data & Lock Files)
 # -----------------------------------------------------------------------------
 qdrant_data/
 **/qdrant_data/
+backend/qdrant_data/
 storage.lock
 *.lock
+!package-lock.json
+!frontend/package-lock.json
 
 # -----------------------------------------------------------------------------
 # 4. User Uploaded Documents & Media (Keep directory structure with .gitkeep)
 # -----------------------------------------------------------------------------
 uploaded_documents/*
 **/uploaded_documents/*
+backend/uploaded_documents/*
 !uploaded_documents/.gitkeep
 !**/uploaded_documents/.gitkeep
+!backend/uploaded_documents/.gitkeep
 
 # -----------------------------------------------------------------------------
-# 5. Large AI Model Weights & Quantized Checkpoints (GGUF, safetensors, etc.)
+# 5. Large AI Model Weights & Checkpoints (GGUF, safetensors, ONNX, PyTorch)
 # -----------------------------------------------------------------------------
 *.gguf
 *.bin
@@ -59,11 +86,12 @@ uploaded_documents/*
 *.onnx
 *.safetensors
 /models/
+**/models_cpu_converted/
 /models_cpu_converted/
 !backend/app/models/
 
 # -----------------------------------------------------------------------------
-# 6. Python Caches, Virtual Environments & Build Artifacts
+# 6. Backend: Python Caches, Virtual Environments & Packaging
 # -----------------------------------------------------------------------------
 __pycache__/
 **/__pycache__/
@@ -71,26 +99,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
-/build/
-develop-eggs/
-/dist/
-downloads/
-eggs/
-.eggs/
-/lib/
-/lib64/
-!frontend/src/lib/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environments
+backend/.venv/
+**/venv/
+**/.venv/
 venv/
 .venv/
 env/
@@ -98,49 +109,138 @@ ENV/
 env.bak/
 venv.bak/
 
-# Testing & Coverage Caches
+# Packaging & Build Artifacts
+build/
+**/build/
+develop-eggs/
+dist/
+**/dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+!frontend/src/lib/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+**/*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+pip-log.txt
+.pip-cache/
+
+# Testing, Type Checking & Linting Caches (Backend)
 .pytest_cache/
 **/pytest_cache/
+**/.pytest_cache/
 .coverage
 .coverage.*
+**/coverage/
+htmlcov/
+**/htmlcov/
 .cache
+**/.cache/
 nosetests.xml
 coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
 .mypy_cache/
+**/.mypy_cache/
 .ruff_cache/
+**/.ruff_cache/
+.pytype/
+.pyre/
+.dmypy.json
+dmypy.json
+celerybeat-schedule*
+celerybeat.pid
 
 # -----------------------------------------------------------------------------
-# 7. Node / Frontend Dependencies & Build Outputs
+# 7. Frontend: Node / React / Vite / TypeScript Build & Caches
 # -----------------------------------------------------------------------------
 node_modules/
 **/node_modules/
+frontend/node_modules/
+
+# Frontend Build Outputs
 frontend/dist/
 dist/
 dist-ssr/
-*.tsbuildinfo
-.eslintcache
+build/
+storybook-static/
 
-# Logs
-logs/
-*.log
+# Vite Cache
+.vite/
+**/.vite/
+frontend/.vite/
+
+# TypeScript Incremental Build Cache
+*.tsbuildinfo
+**/*.tsbuildinfo
+frontend/*.tsbuildinfo
+frontend/tsconfig.app.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+
+# Linter & Formatter Caches
+.eslintcache
+**/.eslintcache
+frontend/.eslintcache
+.stylelintcache
+**/.stylelintcache
+.prettiercache
+**/.prettiercache
+
+# Frontend Testing & Coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+frontend/cypress/videos/
+frontend/cypress/screenshots/
+
+# Package Manager Logs & Stores
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+**/.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.turbo/
+**/.turbo/
 
 # -----------------------------------------------------------------------------
-# 8. Temporary Workspaces, Test Reports & Archive Folders
+# 8. Runtime Logs, Temporary Files & Workspace Directories
 # -----------------------------------------------------------------------------
+logs/
+**/logs/
+*.log
+**/*.log
 scratch/
+**/scratch/
 archive/
+**/archive/
 test_reports/
+**/test_reports/
 tmp/
+**/tmp/
 temp/
+**/temp/
 *.tmp
 *.temp
+.system_generated/
+**/.system_generated/
 
 # -----------------------------------------------------------------------------
 # 9. IDE & Editor Configuration
@@ -157,6 +257,8 @@ temp/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
 # -----------------------------------------------------------------------------
 # 10. Operating System Files
