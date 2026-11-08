@@ -370,7 +370,7 @@ class DocumentProcessingService:
             evidence_points_count=len(chunks) * 2,
             debates_count=0,
             metadata_json={
-                "file_path": file_path,
+                "file_path": None,
                 "sections": sections_meta,
                 "suggestedQuestions": [
                     f"Does this text provide sufficient empirical evidence to substantiate its claims?",
@@ -535,7 +535,7 @@ class DocumentProcessingService:
             evidence_points_count=len(all_chunks) * 2,
             debates_count=0,
             metadata_json={
-                "file_path": file_path,
+                "file_path": None,
                 "sections": sections_meta,
                 "suggestedQuestions": [
                     f"Does {original_filename} provide sufficient empirical evidence to substantiate its primary assertions?",

@@ -83,6 +83,7 @@ class JudgeReportSchema(BaseModel):
     unresolved_questions: List[str] = Field(default_factory=list, description="Unresolved questions and uncertainties")
     confidence: float = Field(default=85.0, ge=0.0, le=100.0, description="Judge confidence in the ruling")
     evaluation_errors: List[str] = Field(default_factory=list, description="Validation or parsing warnings during adjudication")
+    performance_metrics: Optional[Dict[str, Any]] = Field(default=None, description="Detailed judge execution latency, token counts, and generation speed")
 
     @model_validator(mode="before")
     @classmethod

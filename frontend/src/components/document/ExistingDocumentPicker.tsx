@@ -20,7 +20,7 @@ export const ExistingDocumentPicker: React.FC<ExistingDocumentPickerProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-      <div className="relative w-full max-w-2xl rounded-3xl border border-slate-200/90 dark:border-white/10 bg-white/95 dark:bg-[#070a16]/95 backdrop-blur-2xl shadow-2xl p-6 sm:p-7 space-y-5">
+      <div className="relative w-full max-w-2xl rounded-3xl border border-slate-200/90 dark:border-white/10 bg-white/95 dark:bg-[#070a10]/95 backdrop-blur-2xl shadow-2xl p-6 sm:p-7 space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-200/80 dark:border-white/10">
           <div className="flex items-center gap-3">

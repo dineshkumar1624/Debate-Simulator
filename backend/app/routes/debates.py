@@ -49,7 +49,8 @@ def start_debate_background_thread(
     document_id: Optional[str],
     source_scope: str,
     judge_provider: Optional[str] = "nvidia",
-    judge_model: Optional[str] = None
+    judge_model: Optional[str] = None,
+    research_timings: Optional[Dict[str, Any]] = None
 ) -> threading.Thread:
     """
     Spawns and tracks a persistent background thread for LangGraph debate execution.
@@ -71,7 +72,8 @@ def start_debate_background_thread(
                     document_id=document_id,
                     source_scope=source_scope,
                     judge_provider=judge_provider,
-                    judge_model=judge_model
+                    judge_model=judge_model,
+                    research_timings=research_timings
                 )
             except Exception as ex:
                 logger.error(f"Unhandled exception in debate background thread for {debate_id}: {ex}", exc_info=True)
@@ -97,14 +99,19 @@ def _run_debate_in_background(
     document_id: Optional[str],
     source_scope: str,
     judge_provider: Optional[str] = "nvidia",
-    judge_model: Optional[str] = None
+    judge_model: Optional[str] = None,
+    research_timings: Optional[Dict[str, Any]] = None
 ):
     """
     Executes LangGraph debate workflow in background thread/task.
     Enforces hardware exclusivity via _active_debate_lock to guarantee sequential execution.
     """
+    import time
+    from datetime import timezone
     logger.info(f"Queuing background LangGraph execution for debate {debate_id} (judge: {judge_provider}/{judge_model})")
+    t_queue_wait_start = time.perf_counter()
     acquired = _active_debate_lock.acquire(timeout=600)
+    queue_wait_duration = time.perf_counter() - t_queue_wait_start
     if not acquired:
         err = f"Debate {debate_id} timed out waiting for hardware execution lock."
         logger.error(err)
@@ -144,7 +151,19 @@ def _run_debate_in_background(
             "judge_report": None,
             "resume_target": None,
             "status": "debating",
-            "error": None
+            "error": None,
+            "research_timings": research_timings,
+            "metrics": {
+                "debate_id": debate_id,
+                "topic": topic,
+                "source_scope": source_scope,
+                "queue_wait_sec": round(queue_wait_duration, 4),
+                "started_at_perf": time.perf_counter(),
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "db_persistence_sec": 0.0,
+                "rounds": {},
+                "research": research_timings
+            }
         }
 
         try:
@@ -340,6 +359,11 @@ def create_or_start_debate(
         ).update({"debate_id": debate_id}, synchronize_session=False)
     db.commit()
 
+    # Retrieve research timings if applicable
+    from ..services.research_service import research_cache
+    cached_res = research_cache.get_topic(payload.topic)
+    res_timings = payload.researchTimings or (cached_res.get("timings") if cached_res else None)
+
     start_debate_background_thread(
         debate_id=debate_id,
         topic=payload.topic,
@@ -347,7 +371,8 @@ def create_or_start_debate(
         document_id=payload.documentId,
         source_scope=scope,
         judge_provider=req_provider,
-        judge_model=judge
+        judge_model=judge,
+        research_timings=res_timings
     )
 
     from datetime import timezone

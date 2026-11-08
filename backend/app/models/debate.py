@@ -20,6 +20,7 @@ class DebateModel(Base):
     document_id = Column(String(64), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(64), default="idle") # idle, configuring, debating, verifying, evaluating, synthesizing, completed, failed
     error_message = Column(Text, nullable=True)
+    performance_metrics = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

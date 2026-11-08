@@ -40,3 +40,5 @@ class DebateGraphState(TypedDict):
     error: Optional[str]
     resume_target: Optional[str]
     winner: Optional[str]
+    metrics: Optional[Dict[str, Any]]
+    research_timings: Optional[Dict[str, Any]]

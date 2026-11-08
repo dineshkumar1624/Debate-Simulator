@@ -6,6 +6,8 @@ import urllib.parse
 import ipaddress
 import hashlib
 import time
+import os
+import tempfile
 from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 from datetime import datetime
 from abc import ABC, abstractmethod
@@ -90,6 +92,24 @@ def canonicalize_url(raw_url: str) -> Optional[str]:
         return clean
     except Exception:
         return None
+
+
+def is_pdf_candidate(url: str, content_type: str = "") -> bool:
+    """
+    Determines if a candidate URL or Content-Type points to a PDF research paper.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    clean_u = url.lower().split("?")[0].rstrip("/")
+    if clean_u.endswith(".pdf"):
+        return True
+    if "/pdf/" in clean_u or "arxiv.org/pdf" in clean_u or "openreview.net/pdf" in clean_u:
+        return True
+    if content_type:
+        ct_lower = content_type.lower()
+        if "application/pdf" in ct_lower or "application/x-pdf" in ct_lower:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +218,10 @@ class ResearchCache:
         self._topic_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         # canonical_url -> (expiry_time, article_text)
         self._article_cache: Dict[str, Tuple[float, str]] = {}
+        # canonical_url -> (expiry_time, content_hash, List[Dict[str, Any]] pages)
+        self._pdf_cache: Dict[str, Tuple[float, str, List[Dict[str, Any]]]] = {}
+        # content_hash -> (expiry_time, List[Dict[str, Any]] pages)
+        self._pdf_hash_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
         self._hits = 0
         self._misses = 0
 
@@ -238,6 +262,29 @@ class ResearchCache:
         if url and text:
             expiry = time.time() + self.article_ttl
             self._article_cache[url] = (expiry, text)
+
+    def get_pdf(self, url: str, content_hash: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        now = time.time()
+        if content_hash and content_hash in self._pdf_hash_cache:
+            exp, pages = self._pdf_hash_cache[content_hash]
+            if now <= exp:
+                self._hits += 1
+                return pages
+            del self._pdf_hash_cache[content_hash]
+        if url in self._pdf_cache:
+            exp, _, pages = self._pdf_cache[url]
+            if now <= exp:
+                self._hits += 1
+                return pages
+            del self._pdf_cache[url]
+        return None
+
+    def set_pdf(self, url: str, content_hash: str, pages: List[Dict[str, Any]]):
+        exp = time.time() + self.article_ttl
+        if url:
+            self._pdf_cache[url] = (exp, content_hash, pages)
+        if content_hash:
+            self._pdf_hash_cache[content_hash] = (exp, pages)
 
     @property
     def hit_rate(self) -> float:
@@ -397,44 +444,288 @@ class ResearchService:
             queries.append(f"{clean_topic} analysis study research findings")
         return queries
 
-    def _fetch_single_article(self, src: Dict[str, Any], client: httpx.Client, timeout: float = 3.5) -> Dict[str, Any]:
+    def _download_and_extract_pdf(
+        self,
+        src: Dict[str, Any],
+        client: httpx.Client,
+        emit_callback: Optional[Callable[[str, str, str, Optional[Dict[str, Any]]], None]] = None,
+        timeout: Optional[float] = None,
+        max_bytes: Optional[int] = None,
+        max_pages: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
-        Safely retrieves article body with bounded timeout, size limit, and SSRF protection.
-        Preserves snippet as graceful fallback if website is inaccessible.
+        Safely streams, validates, and extracts text from a PDF research paper.
+        Enforces SSRF protection, size limits, PDF signature check, and page-aware extraction.
+        Reuses document_service.extract_from_pdf (with RapidOCR fallback for scanned pages).
+        Falls back gracefully to search snippet if inaccessible.
         """
         src.setdefault("content", src.get("snippet", ""))
+        src["content_type"] = "SEARCH_SNIPPET_ONLY"
+        src["page_count"] = 1
+        src["pages_extracted"] = 0
+        src["pdf_pages"] = []
+
         url = src.get("url", "")
         if not url or not is_safe_url(url):
+            src["warning"] = "URL failed safety or SSRF validation."
             return src
 
-        # Check article cache
+        # Check warm PDF cache
+        cached_pages = research_cache.get_pdf(url)
+        if cached_pages:
+            logger.info(f"ResearchCache HIT for PDF: {url} ({len(cached_pages)} pages)")
+            src["content_type"] = "FULL_PDF_TEXT"
+            src["page_count"] = len(cached_pages)
+            src["pages_extracted"] = len(cached_pages)
+            src["pdf_pages"] = cached_pages
+            src["content"] = "\n\n".join(f"[Page {p['page_number']}]\n{p['text']}" for p in cached_pages)
+            src["is_full_article"] = True
+            if emit_callback:
+                emit_callback(
+                    "pdf_extraction_completed",
+                    "in_progress",
+                    f"Retrieved {len(cached_pages)} pages from cache for {src['title'][:40]}",
+                    {"url": url, "pages_extracted": len(cached_pages), "from_cache": True}
+                )
+            return src
+
+        if emit_callback:
+            emit_callback(
+                "pdf_download_started",
+                "in_progress",
+                f"Downloading research PDF: {src['title'][:40]}...",
+                {"url": url}
+            )
+
+        t_dl_start = time.perf_counter()
+        temp_path = None
+        hasher = hashlib.sha256()
+        total_bytes = 0
+        has_magic = False
+        effective_timeout = timeout or getattr(settings, "PDF_DOWNLOAD_TIMEOUT_SECONDS", 25.0)
+        effective_max_bytes = max_bytes or getattr(settings, "MAX_PDF_SIZE_BYTES", 20 * 1024 * 1024)
+
+        try:
+            temp_file = tempfile.NamedTemporaryFile(suffix=".pdf", prefix="agy_research_pdf_", delete=False)
+            temp_path = temp_file.name
+
+            with client.stream("GET", url, timeout=effective_timeout, follow_redirects=True) as resp:
+                if resp.status_code != 200:
+                    raise ValueError(f"HTTP {resp.status_code} returned by host")
+
+                # SSRF audit on final URL & redirects
+                if not is_safe_url(str(resp.url)):
+                    raise ValueError(f"Redirected to unsafe URL: {resp.url}")
+                for hist in resp.history:
+                    if not is_safe_url(str(hist.url)):
+                        raise ValueError(f"Redirect chain contains unsafe URL: {hist.url}")
+
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    if not has_magic:
+                        if b"%PDF-" not in chunk[:1024]:
+                            raise ValueError("Invalid PDF signature: missing '%PDF-' header")
+                        has_magic = True
+                    total_bytes += len(chunk)
+                    if total_bytes > effective_max_bytes:
+                        raise ValueError(f"File exceeds maximum allowed size ({effective_max_bytes / (1024*1024):.1f} MB)")
+                    hasher.update(chunk)
+                    temp_file.write(chunk)
+
+            temp_file.close()
+            src["download_duration_sec"] = time.perf_counter() - t_dl_start
+
+            content_hash = hasher.hexdigest()
+            src["content_hash"] = content_hash
+
+            if emit_callback:
+                emit_callback(
+                    "pdf_download_completed",
+                    "in_progress",
+                    f"Downloaded PDF: {src['title'][:40]} ({total_bytes / 1024:.1f} KB)",
+                    {"url": url, "bytes": total_bytes, "content_hash": content_hash}
+                )
+
+            # Check if this content_hash is already cached
+            cached_by_hash = research_cache.get_pdf(url, content_hash=content_hash)
+            if cached_by_hash:
+                src["content_type"] = "FULL_PDF_TEXT"
+                src["page_count"] = len(cached_by_hash)
+                src["pages_extracted"] = len(cached_by_hash)
+                src["pdf_pages"] = cached_by_hash
+                src["content"] = "\n\n".join(f"[Page {p['page_number']}]\n{p['text']}" for p in cached_by_hash)
+                src["is_full_article"] = True
+                src["extraction_duration_sec"] = 0.0
+                return src
+
+            # Extract full text page-by-page using document_service
+            if emit_callback:
+                emit_callback(
+                    "pdf_extraction_started",
+                    "in_progress",
+                    f"Extracting text and tables from {src['title'][:40]}...",
+                    {"url": url}
+                )
+
+            t_ext_start = time.perf_counter()
+            raw_pages = document_service.extract_from_pdf(temp_path)
+            src["extraction_duration_sec"] = time.perf_counter() - t_ext_start
+            if not raw_pages:
+                raise ValueError("PDF document contains no readable text or extractable OCR pages.")
+
+            effective_max_pages = max_pages or getattr(settings, "MAX_PDF_PAGES_TO_EXTRACT", 30)
+            pages_content = raw_pages[:effective_max_pages]
+
+            for p in pages_content:
+                if emit_callback:
+                    emit_callback(
+                        "pdf_page_extracted",
+                        "in_progress",
+                        f"Extracted Page {p['page_number']} of {len(raw_pages)} for {src['title'][:35]}",
+                        {"url": url, "page": p["page_number"], "total_pages": len(raw_pages)}
+                    )
+
+            total_chars = sum(len(p.get("text", "")) for p in pages_content)
+            logger.info(f"PDF extraction succeeded for {url}: {len(pages_content)} pages, {total_chars} chars")
+
+            src["content_type"] = "FULL_PDF_TEXT"
+            src["page_count"] = len(raw_pages)
+            src["pages_extracted"] = len(pages_content)
+            src["pdf_pages"] = pages_content
+            src["content"] = "\n\n".join(f"[Page {p['page_number']}]\n{p['text']}" for p in pages_content)
+            src["is_full_article"] = True
+
+            research_cache.set_pdf(url, content_hash, pages_content)
+
+            if emit_callback:
+                emit_callback(
+                    "pdf_extraction_completed",
+                    "in_progress",
+                    f"Completed extraction of {len(pages_content)} pages ({total_chars} chars) from {src['title'][:35]}",
+                    {
+                        "url": url,
+                        "pages_extracted": len(pages_content),
+                        "total_pages": len(raw_pages),
+                        "total_chars": total_chars
+                    }
+                )
+
+        except Exception as e:
+            logger.warning(f"Failed to download/extract PDF {url}: {e}")
+            src["content_type"] = "SEARCH_SNIPPET_ONLY"
+            src["warning"] = f"Full PDF content was not accessible: {e}"
+            if emit_callback:
+                emit_callback(
+                    "pdf_failed",
+                    "failed",
+                    f"PDF processing failed: {e}. Falling back to verified search snippet.",
+                    {"url": url, "reason": str(e)}
+                )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+        return src
+
+    def _fetch_single_article(
+        self,
+        src: Dict[str, Any],
+        client: httpx.Client,
+        timeout: float = 4.0,
+        emit_callback: Optional[Callable[[str, str, str, Optional[Dict[str, Any]]], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Safely retrieves article body or full PDF with bounded timeout, size limit, and SSRF protection.
+        Preserves snippet as graceful fallback if website or PDF is inaccessible.
+        """
+        src.setdefault("content", src.get("snippet", ""))
+        src.setdefault("content_type", "SEARCH_SNIPPET_ONLY")
+        src.setdefault("page_count", 1)
+        src.setdefault("pages_extracted", 0)
+        src.setdefault("pdf_pages", [])
+
+        url = src.get("url", "")
+        if not url or not is_safe_url(url):
+            src["warning"] = "URL failed safety validation."
+            return src
+
+        # Check if URL explicitly indicates a PDF document
+        if is_pdf_candidate(url):
+            if emit_callback:
+                emit_callback(
+                    "pdf_discovered",
+                    "in_progress",
+                    f"Discovered research PDF: {src['title'][:40]}",
+                    {"url": url, "title": src["title"]}
+                )
+            return self._download_and_extract_pdf(
+                src=src,
+                client=client,
+                emit_callback=emit_callback,
+                timeout=getattr(settings, "PDF_DOWNLOAD_TIMEOUT_SECONDS", 25.0)
+            )
+
+        # Check HTML article cache
         cached_text = research_cache.get_article(url)
         if cached_text:
             src["content"] = cached_text
+            src["content_type"] = "FULL_HTML_ARTICLE"
+            src["page_count"] = 1
+            src["pages_extracted"] = 1
             src["is_full_article"] = True
             return src
 
         try:
-            with client.stream("GET", url, timeout=timeout) as resp:
+            effective_timeout = min(timeout, 8.0)
+            with client.stream("GET", url, timeout=effective_timeout, follow_redirects=True) as resp:
                 if resp.status_code != 200:
                     return src
+
                 ct = resp.headers.get("content-type", "").lower()
+                final_url = str(resp.url)
+
+                # Check if redirected to a PDF or Content-Type is PDF
+                if is_pdf_candidate(final_url, ct):
+                    resp.close()
+                    if emit_callback:
+                        emit_callback(
+                            "pdf_discovered",
+                            "in_progress",
+                            f"Discovered research PDF (via redirect/header): {src['title'][:40]}",
+                            {"url": final_url, "title": src["title"]}
+                        )
+                    return self._download_and_extract_pdf(
+                        src=src,
+                        client=client,
+                        emit_callback=emit_callback,
+                        timeout=getattr(settings, "PDF_DOWNLOAD_TIMEOUT_SECONDS", 25.0)
+                    )
+
                 if "text/html" not in ct and "text/plain" not in ct:
+                    src["warning"] = f"Unsupported content-type: {ct}"
                     return src
+
+                t_html_start = time.perf_counter()
                 raw_bytes = b""
-                # Read at most 128 KB
+                # Read at most 128 KB for HTML articles
                 for chunk in resp.iter_bytes():
                     raw_bytes += chunk
                     if len(raw_bytes) >= 131072:
                         break
                 text = clean_html_to_text(raw_bytes.decode("utf-8", errors="ignore"))
+                src["html_duration_sec"] = time.perf_counter() - t_html_start
                 if len(text) >= 120:
                     src["content"] = text
+                    src["content_type"] = "FULL_HTML_ARTICLE"
+                    src["page_count"] = 1
+                    src["pages_extracted"] = 1
                     src["is_full_article"] = True
                     research_cache.set_article(url, text)
-        except Exception:
+        except Exception as e:
             # Non-blocking: retain existing search snippet
-            pass
+            src["warning"] = f"Article retrieval failed: {e}"
         return src
 
     def conduct_research_and_index(
@@ -455,6 +746,8 @@ class ResearchService:
         6. Batch embedding & batch Qdrant indexing.
         7. Research persistence & progress event dispatch.
         """
+        from datetime import timezone
+        research_start_time = datetime.now(timezone.utc).isoformat()
         session_id = f"res-{uuid.uuid4().hex[:8]}"
         t_start_total = time.perf_counter()
         logger.info(f"[{session_id}] Starting optimized research on topic: '{topic}' (max_sources={max_sources})")
@@ -496,7 +789,14 @@ class ResearchService:
                         url=src.get("url", ""),
                         content=src.get("content", ""),
                         published_date=src.get("published_date"),
-                        metadata_json={"evidence_items": [ev for ev in cached_evidence if ev.get("url") == src.get("url")]}
+                        metadata_json={
+                            "content_type": src.get("content_type", "SEARCH_SNIPPET_ONLY"),
+                            "page_count": src.get("page_count"),
+                            "pages_extracted": src.get("pages_extracted"),
+                            "content_hash": src.get("content_hash"),
+                            "warning": src.get("warning"),
+                            "evidence_items": [ev for ev in cached_evidence if ev.get("url") == src.get("url")]
+                        }
                     )
                     db.add(rec)
                 db.commit()
@@ -506,6 +806,22 @@ class ResearchService:
                 st["status"] = "completed"
                 emit(st["id"], "completed", st["detail"])
 
+            cache_duration = time.perf_counter() - t_start_total
+            cached_timings = cached_result.get("timings", {})
+            effective_timings = {
+                "research_start_time": research_start_time,
+                "research_completed_time": datetime.now(timezone.utc).isoformat(),
+                "total_research_duration_sec": round(cache_duration, 4),
+                "search_provider_duration_sec": cached_timings.get("search_provider_duration_sec", 0.0),
+                "pdf_download_duration_sec": 0.0,
+                "pdf_extraction_duration_sec": 0.0,
+                "ocr_duration_sec": 0.0,
+                "html_extraction_duration_sec": 0.0,
+                "embedding_duration_sec": 0.0,
+                "qdrant_indexing_duration_sec": 0.0,
+                "is_cached": True
+            }
+
             cached_payload = {
                 "topic": topic,
                 "queries": cached_result.get("queries", []),
@@ -514,7 +830,8 @@ class ResearchService:
                 "stages": stages,
                 "indexed_chunks": cached_result.get("indexed_chunks", 0),
                 "status": "completed",
-                "message": "Evidence retrieved from verified research cache and indexed."
+                "message": "Evidence retrieved from verified research cache and indexed.",
+                "timings": effective_timings
             }
             emit("complete", "completed", "Research retrieved from cache", cached_payload)
             return cached_payload
@@ -599,20 +916,30 @@ class ResearchService:
         target_sources = unique_sources[:max_sources]
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8'
         }
 
+        # Concurrency: enforce max concurrent downloads (configurable in settings)
+        has_pdf = any(is_pdf_candidate(s.get("url", "")) for s in target_sources)
+        max_workers = min(len(target_sources), getattr(settings, "MAX_CONCURRENT_PDF_DOWNLOADS", 2) if has_pdf else 4)
+
         all_sources: List[Dict[str, Any]] = []
-        with httpx.Client(headers=headers, follow_redirects=True, timeout=4.0) as client:
-            with ThreadPoolExecutor(max_workers=min(len(target_sources), 4)) as executor:
-                futs = [executor.submit(self._fetch_single_article, s, client) for s in target_sources]
+        with httpx.Client(headers=headers, follow_redirects=True, timeout=getattr(settings, "PDF_DOWNLOAD_TIMEOUT_SECONDS", 25.0)) as client:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futs = [executor.submit(self._fetch_single_article, s, client, 6.0, emit) for s in target_sources]
                 for fut in as_completed(futs):
                     res = fut.result()
                     all_sources.append(res)
-                    emit("source_found", "in_progress", f"Collected: {res.get('title')[:45]}...", {"source": res})
+                    c_type = res.get("content_type", "SEARCH_SNIPPET_ONLY")
+                    title_preview = res.get('title', '')[:40]
+                    emit("source_found", "in_progress", f"Collected [{c_type}]: {title_preview}...", {"source": res})
+
+        pdf_sources = [s for s in all_sources if s.get("content_type") == "FULL_PDF_TEXT"]
+        html_sources = [s for s in all_sources if s.get("content_type") == "FULL_HTML_ARTICLE"]
+        snippet_sources = [s for s in all_sources if s.get("content_type") == "SEARCH_SNIPPET_ONLY"]
 
         stages[2]["status"] = "completed"
-        stages[2]["detail"] = f"Collected {len(all_sources)} verified web sources."
+        stages[2]["detail"] = f"Collected {len(all_sources)} verified sources ({len(pdf_sources)} research PDFs, {len(html_sources)} HTML articles, {len(snippet_sources)} snippet fallbacks)."
         emit("collect_articles", "completed", stages[2]["detail"])
         logger.info(f"[{session_id}] Stage 3 (collect_articles) finished in {time.perf_counter() - t2:.4f}s")
 
@@ -621,16 +948,16 @@ class ResearchService:
         # -------------------------------------------------------------
         t3 = time.perf_counter()
         stages[3]["status"] = "completed"
-        stages[3]["detail"] = f"Verified {len(all_sources)} authoritative sources."
+        stages[3]["detail"] = f"Verified {len(all_sources)} authoritative sources ({len(pdf_sources)} full PDFs, {len(html_sources)} full articles)."
         emit("check_relevance", "completed", stages[3]["detail"])
         logger.info(f"[{session_id}] Stage 4 (check_relevance) finished in {time.perf_counter() - t3:.4f}s")
 
         # -------------------------------------------------------------
-        # STAGE 5: Salient Evidence Claim Extraction
+        # STAGE 5: Salient Evidence Claim Extraction (Page-Aware)
         # -------------------------------------------------------------
         t4 = time.perf_counter()
         stages[4]["status"] = "in_progress"
-        emit("extract_evidence", "in_progress", "Extracting factual claims and empirical indicators...")
+        emit("extract_evidence", "in_progress", "Extracting factual claims, empirical indicators, and page citations...")
 
         evidence_items: List[Dict[str, Any]] = []
         evidence_keywords = {
@@ -640,39 +967,73 @@ class ResearchService:
         }
 
         for src in all_sources:
-            content_text = src.get("content") or src.get("snippet", "")
-            raw_sentences = [
-                s.strip() for s in re.split(r'(?<=[.!?])\s+', content_text)
-                if len(s.strip()) > 35 and not s.strip().startswith("http")
-            ]
-            # Score sentences by empirical keyword density
-            scored_sentences = []
-            for s in raw_sentences:
-                words = set(re.findall(r'\b\w+\b', s.lower()))
-                score = len(words.intersection(evidence_keywords))
-                scored_sentences.append((score, s))
-            scored_sentences.sort(key=lambda x: x[0], reverse=True)
+            if src.get("content_type") == "FULL_PDF_TEXT" and src.get("pdf_pages"):
+                # Extract claims page-by-page preserving original page numbers
+                for p in src["pdf_pages"]:
+                    page_num = p["page_number"]
+                    page_text = p.get("text", "").strip()
+                    if not page_text:
+                        continue
+                    raw_sentences = [
+                        s.strip() for s in re.split(r'(?<=[.!?])\s+', page_text)
+                        if len(s.strip()) > 35 and not s.strip().startswith("http")
+                    ]
+                    scored = []
+                    for s in raw_sentences:
+                        words = set(re.findall(r'\b\w+\b', s.lower()))
+                        score = len(words.intersection(evidence_keywords))
+                        scored.append((score, s))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    top_sentence = scored[0][1] if scored else (raw_sentences[0] if raw_sentences else page_text[:200])
 
-            selected_claims = [s for _, s in scored_sentences[:2]]
-            if not selected_claims and raw_sentences:
-                selected_claims = raw_sentences[:2]
-            elif not selected_claims:
-                selected_claims = [content_text[:200]]
+                    ev_id = f"ev-pdf-{uuid.uuid4().hex[:6]}"
+                    item = {
+                        "id": ev_id,
+                        "claim": top_sentence,
+                        "source": f"{src['title']} (Page {page_num})",
+                        "url": src["url"],
+                        "page": page_num,
+                        "contentType": "FULL_PDF_TEXT",
+                        "publishedDate": src.get("published_date")
+                    }
+                    evidence_items.append(item)
+                    emit("evidence_extracted", "in_progress", f"Claim [p.{page_num}]: {top_sentence[:45]}...", {"evidence": item})
+            else:
+                content_text = src.get("content") or src.get("snippet", "")
+                raw_sentences = [
+                    s.strip() for s in re.split(r'(?<=[.!?])\s+', content_text)
+                    if len(s.strip()) > 35 and not s.strip().startswith("http")
+                ]
+                scored_sentences = []
+                for s in raw_sentences:
+                    words = set(re.findall(r'\b\w+\b', s.lower()))
+                    score = len(words.intersection(evidence_keywords))
+                    scored_sentences.append((score, s))
+                scored_sentences.sort(key=lambda x: x[0], reverse=True)
 
-            for claim_text in selected_claims:
-                ev_id = f"ev-web-{uuid.uuid4().hex[:6]}"
-                item = {
-                    "id": ev_id,
-                    "claim": claim_text,
-                    "source": src["title"],
-                    "url": src["url"],
-                    "publishedDate": src.get("published_date")
-                }
-                evidence_items.append(item)
-                emit("evidence_extracted", "in_progress", f"Claim: {claim_text[:50]}...", {"evidence": item})
+                selected_claims = [s for _, s in scored_sentences[:2]]
+                if not selected_claims and raw_sentences:
+                    selected_claims = raw_sentences[:2]
+                elif not selected_claims:
+                    selected_claims = [content_text[:200]]
+
+                c_type = src.get("content_type", "SEARCH_SNIPPET_ONLY")
+                for claim_text in selected_claims:
+                    ev_id = f"ev-web-{uuid.uuid4().hex[:6]}"
+                    item = {
+                        "id": ev_id,
+                        "claim": claim_text,
+                        "source": src["title"],
+                        "url": src["url"],
+                        "page": None,
+                        "contentType": c_type,
+                        "publishedDate": src.get("published_date")
+                    }
+                    evidence_items.append(item)
+                    emit("evidence_extracted", "in_progress", f"Claim: {claim_text[:50]}...", {"evidence": item})
 
         stages[4]["status"] = "completed"
-        stages[4]["detail"] = f"Extracted {len(evidence_items)} factual evidence statements."
+        stages[4]["detail"] = f"Extracted {len(evidence_items)} factual evidence statements with original source & page citations."
         emit("extract_evidence", "completed", stages[4]["detail"])
         logger.info(f"[{session_id}] Stage 5 (extract_evidence) finished in {time.perf_counter() - t4:.4f}s")
 
@@ -683,7 +1044,7 @@ class ResearchService:
         stages[5]["status"] = "in_progress"
         emit("prepare_evidence", "in_progress", "Batch embedding and vectorizing knowledge in Qdrant...")
 
-        # 1. Persist sources to SQLite
+        # 1. Persist sources to SQLite with rich metadata
         for src in all_sources:
             rec = ResearchSourceModel(
                 id=src["id"],
@@ -694,41 +1055,104 @@ class ResearchService:
                 url=src["url"],
                 content=src.get("content", ""),
                 published_date=src.get("published_date"),
-                metadata_json={"evidence_items": [ev for ev in evidence_items if ev["url"] == src["url"]]}
+                metadata_json={
+                    "content_type": src.get("content_type", "SEARCH_SNIPPET_ONLY"),
+                    "page_count": src.get("page_count"),
+                    "pages_extracted": src.get("pages_extracted"),
+                    "content_hash": src.get("content_hash"),
+                    "warning": src.get("warning"),
+                    "evidence_items": [ev for ev in evidence_items if ev["url"] == src["url"]]
+                }
             )
             db.add(rec)
         db.commit()
 
-        # 2. Chunk text and prepare chunk entries
+        # 2. Chunk text and prepare chunk entries (Page-aware for PDFs)
         all_chunks = []
         for src in all_sources:
-            chunks = document_service.chunk_text(
-                text=src.get("content") or src.get("snippet", ""),
-                page_number=1,
-                section_title=src["title"]
-            )
-            for c in chunks:
-                all_chunks.append({
-                    "chunk_id": c["chunk_id"],
-                    "document_id": debate_id or "web_research",
-                    "content": c["content"],
-                    "page_number": 1,
-                    "section_title": src["title"],
-                    "title": src["title"],
-                    "url": src["url"],
-                    "source_type": "web"
-                })
+            if src.get("content_type") == "FULL_PDF_TEXT" and src.get("pdf_pages"):
+                emit("pdf_indexing_started", "in_progress", f"Chunking and embedding {src['title'][:35]}...", {"url": src["url"]})
+                src_chunks_count = 0
+                for p in src["pdf_pages"]:
+                    p_chunks = document_service.chunk_text(
+                        text=p["text"],
+                        page_number=p["page_number"],
+                        section_title=f"{src['title']} - Page {p['page_number']}"
+                    )
+                    for c in p_chunks:
+                        all_chunks.append({
+                            "chunk_id": c["chunk_id"],
+                            "document_id": debate_id or "web_research",
+                            "content": c["content"],
+                            "page_number": p["page_number"],
+                            "section_title": f"{src['title']} - Page {p['page_number']}",
+                            "title": src["title"],
+                            "url": src["url"],
+                            "source_type": "web",
+                            "evidence_type": "web_pdf",
+                            "content_hash": src.get("content_hash", "")
+                        })
+                        src_chunks_count += 1
+                emit("pdf_indexing_completed", "in_progress", f"Indexed {src_chunks_count} chunks across {len(src['pdf_pages'])} pages for {src['title'][:35]}", {"url": src["url"], "chunks": src_chunks_count})
+            else:
+                chunks = document_service.chunk_text(
+                    text=src.get("content") or src.get("snippet", ""),
+                    page_number=1,
+                    section_title=src["title"]
+                )
+                ev_type = "web_html" if src.get("content_type") == "FULL_HTML_ARTICLE" else "search_snippet"
+                for c in chunks:
+                    all_chunks.append({
+                        "chunk_id": c["chunk_id"],
+                        "document_id": debate_id or "web_research",
+                        "content": c["content"],
+                        "page_number": 1,
+                        "section_title": src["title"],
+                        "title": src["title"],
+                        "url": src["url"],
+                        "source_type": "web",
+                        "evidence_type": ev_type,
+                        "content_hash": src.get("content_hash", "")
+                    })
 
         # 3. Batch encode & batch upsert
+        embed_duration = 0.0
+        qdrant_duration = 0.0
         if all_chunks:
+            t_embed_start = time.perf_counter()
             texts = [c["content"] for c in all_chunks]
             vectors = embedding_service.embed_documents(texts)
+            embed_duration = time.perf_counter() - t_embed_start
+
+            t_qdrant_start = time.perf_counter()
             qdrant_service.upsert_chunks(all_chunks, vectors)
+            qdrant_duration = time.perf_counter() - t_qdrant_start
 
         stages[5]["status"] = "completed"
-        stages[5]["detail"] = f"Indexed {len(all_chunks)} chunks into shared debate evidence pool."
+        stages[5]["detail"] = f"Indexed {len(all_chunks)} chunks into shared debate evidence pool ({len(pdf_sources)} PDFs fully parsed)."
         emit("prepare_evidence", "completed", stages[5]["detail"])
         logger.info(f"[{session_id}] Stage 6 (prepare_evidence) finished in {time.perf_counter() - t5:.4f}s")
+
+        total_time = time.perf_counter() - t_start_total
+        search_duration = t2 - t1
+        pdf_dl_duration = sum(s.get("download_duration_sec", 0.0) for s in all_sources)
+        pdf_ext_duration = sum(s.get("extraction_duration_sec", 0.0) for s in all_sources)
+        html_ext_duration = sum(s.get("html_duration_sec", 0.0) for s in all_sources)
+
+        from datetime import timezone
+        timings = {
+            "research_start_time": research_start_time,
+            "research_completed_time": datetime.now(timezone.utc).isoformat(),
+            "total_research_duration_sec": round(total_time, 3),
+            "search_provider_duration_sec": round(search_duration, 3),
+            "pdf_download_duration_sec": round(pdf_dl_duration, 3),
+            "pdf_extraction_duration_sec": round(pdf_ext_duration, 3),
+            "ocr_duration_sec": 0.0,
+            "html_extraction_duration_sec": round(html_ext_duration, 3),
+            "embedding_duration_sec": round(embed_duration, 3),
+            "qdrant_indexing_duration_sec": round(qdrant_duration, 3),
+            "is_cached": False
+        }
 
         # Cache final normalized results
         result_payload = {
@@ -739,12 +1163,12 @@ class ResearchService:
             "stages": stages,
             "indexed_chunks": len(all_chunks),
             "status": "completed",
-            "message": "Evidence collected, deduplicated, and indexed in Qdrant."
+            "message": f"Evidence collected, deduplicated, and indexed in Qdrant ({len(pdf_sources)} full PDFs, {len(html_sources)} HTML articles).",
+            "timings": timings
         }
         research_cache.set_topic(topic, result_payload)
 
-        total_time = time.perf_counter() - t_start_total
-        logger.info(f"[{session_id}] Web Research successfully finished in {total_time:.3f}s (sources={len(all_sources)}, claims={len(evidence_items)}, chunks={len(all_chunks)})")
+        logger.info(f"[{session_id}] Web Research successfully finished in {total_time:.3f}s (sources={len(all_sources)}, claims={len(evidence_items)}, chunks={len(all_chunks)}, pdfs={len(pdf_sources)})")
         emit("complete", "completed", f"Research completed in {total_time:.2f}s", result_payload)
 
         return result_payload

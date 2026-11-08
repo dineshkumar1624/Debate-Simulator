@@ -264,6 +264,8 @@ class NvidiaJudgeService:
                     meta_parts.append(f"URL: {url}")
                 if page is not None and not ev.get("is_image"):
                     meta_parts.append(f"Page: {page}")
+                if ev.get("contentType"):
+                    meta_parts.append(f"Content Type: {ev.get('contentType')}")
                 meta_line = " | ".join(meta_parts)
                 raw_txt = ev.get("excerpt") or ev.get("content") or ev.get("text") or ev.get("claim") or ev.get("relevance_explanation") or ""
                 transcript_lines.append(f"Evidence [{idx}] ({meta_line}):\n{raw_txt[:350]}\n")
@@ -504,16 +506,50 @@ class NvidiaJudgeService:
                 try:
                     parsed_data = json.loads(clean_text)
                 except json.JSONDecodeError as jde:
-                    logger.warning(f"[NvidiaJudge] Initial JSON parse failed ({jde}). Attempting regex repair...")
-                    # Additional sanitize: remove control characters that break JSON
+                    logger.warning(f"[NvidiaJudge] Initial JSON parse failed ({jde}). Attempting multi-pass repair...")
+                    # Pass 1: Remove unescaped control characters
                     sanitized = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", clean_text)
                     sanitized = re.sub(r",\s*([\}\]])", r"\1", sanitized)
-                    parsed_data = json.loads(sanitized)
+                    try:
+                        parsed_data = json.loads(sanitized)
+                    except json.JSONDecodeError:
+                        # Pass 2: Repair raw unescaped newlines within strings
+                        sanitized_nl = re.sub(r'(?<!\\)\n', r'\\n', clean_text)
+                        sanitized_nl = re.sub(r",\s*([\}\]])", r"\1", sanitized_nl)
+                        try:
+                            parsed_data = json.loads(sanitized_nl)
+                        except json.JSONDecodeError:
+                            # Pass 3: Fix unescaped internal double quotes inside strings
+                            repaired_quotes = re.sub(r'(?<=[a-zA-Z0-9,\.\?!])"(?=[a-zA-Z0-9\s])', r'\"', sanitized)
+                            try:
+                                parsed_data = json.loads(repaired_quotes)
+                            except json.JSONDecodeError:
+                                import ast
+                                try:
+                                    parsed_data = ast.literal_eval(clean_text)
+                                except Exception:
+                                    # Fallback: re-raise the sanitized parse error
+                                    parsed_data = json.loads(sanitized)
                 parsed_data["judge_provider"] = "nvidia"
                 parsed_data["judge_model"] = resolved_model
                 parsed_data["judge_model_used"] = resolved_model
                 parsed_data["is_fallback"] = False
                 parsed_data["execution_status"] = "REAL_REMOTE_API"
+
+                usage = data.get("usage", {})
+                prompt_toks = usage.get("prompt_tokens") or len(user_prompt.split())
+                gen_toks = usage.get("completion_tokens") or len(raw_text.split())
+                tok_speed = round(gen_toks / req_duration, 2) if req_duration > 0 else 0.0
+
+                parsed_data["performance_metrics"] = {
+                    "provider": "nvidia",
+                    "model": resolved_model,
+                    "evaluation_duration_sec": round(req_duration, 3),
+                    "generated_tokens": gen_toks,
+                    "input_tokens": prompt_toks,
+                    "tokens_per_second": tok_speed,
+                    "ttft_sec": None
+                }
 
                 # Apply citation discipline and assessment
                 parsed_data = self._apply_citation_discipline(parsed_data, transcript, evidence_citations)

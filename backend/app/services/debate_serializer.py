@@ -202,13 +202,18 @@ def format_debate_session(debate: DebateModel) -> DebateSessionSchema:
     res_sources = []
     if hasattr(debate, "research_sources") and debate.research_sources:
         for s in debate.research_sources:
+            meta = s.metadata_json or {}
             res_sources.append({
                 "id": s.id,
                 "title": s.title,
                 "url": s.url,
                 "snippet": s.content[:240] + "..." if len(s.content) > 240 else s.content,
                 "publishedDate": s.published_date,
-                "retrievalTimestamp": s.retrieval_timestamp.isoformat() if s.retrieval_timestamp else ""
+                "retrievalTimestamp": s.retrieval_timestamp.isoformat() if s.retrieval_timestamp else "",
+                "contentType": meta.get("content_type", "SEARCH_SNIPPET_ONLY"),
+                "pageCount": meta.get("page_count"),
+                "pagesExtracted": meta.get("pages_extracted"),
+                "contentHash": meta.get("content_hash")
             })
 
     return DebateSessionSchema(
@@ -230,6 +235,7 @@ def format_debate_session(debate: DebateModel) -> DebateSessionSchema:
         documentType=doc_type,
         sourceScope=debate.source_scope or ("web" if (hasattr(debate, "research_sources") and debate.research_sources and len(debate.research_sources) > 0) else "document"),
         evidenceMode=bool(debate.evidence_mode) if debate.evidence_mode is not None else True,
-        researchSources=res_sources if res_sources else None
+        researchSources=res_sources if res_sources else None,
+        performanceMetrics=debate.performance_metrics or {}
     )
 

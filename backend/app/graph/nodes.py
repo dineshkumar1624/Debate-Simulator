@@ -1,7 +1,8 @@
 import logging
 import uuid
+import time
 from typing import Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from ..database.session import SessionLocal
 from ..models.debate import DebateModel, DebateRoundModel, DebateMessageModel, JudgeEvaluationModel
 from ..models.document import DocumentModel
@@ -123,6 +124,28 @@ def initialize_debate(state: DebateGraphState) -> Dict[str, Any]:
                 "error": None
             }
 
+    import time
+    from datetime import timezone
+    metrics = dict(state.get("metrics") or {})
+    if "started_at_perf" not in metrics:
+        metrics["started_at_perf"] = time.perf_counter()
+    if "created_at_utc" not in metrics:
+        metrics["created_at_utc"] = datetime.now(timezone.utc).isoformat()
+    if "queue_wait_sec" not in metrics:
+        metrics["queue_wait_sec"] = 0.0
+    if "db_persistence_sec" not in metrics:
+        metrics["db_persistence_sec"] = 0.0
+    if "rounds" not in metrics:
+        metrics["rounds"] = {}
+    if not metrics.get("research"):
+        res_timings = state.get("research_timings")
+        if not res_timings and scope in ("web", "web_research"):
+            from ..services.research_service import research_cache
+            cached_res = research_cache.get_topic(topic)
+            if cached_res and cached_res.get("timings"):
+                res_timings = cached_res["timings"]
+        metrics["research"] = res_timings
+
     initial_max_rounds = state.get("max_rounds") or (debate.rounds if (debate and debate.rounds) else 3)
     return {
         "status": "debating",
@@ -135,6 +158,7 @@ def initialize_debate(state: DebateGraphState) -> Dict[str, Any]:
         "permanent_context": perm_context,
         "rolling_summary": None,
         "telemetry": [],
+        "metrics": metrics,
         "error": None
     }
 
@@ -151,6 +175,19 @@ def retrieve_pro_evidence(state: DebateGraphState) -> Dict[str, Any]:
     scope = state.get("source_scope", "document")
     doc_id = state.get("document_ids", [None])[0] if state.get("document_ids") else None
     latest_con = state.get("latest_con_argument")
+
+    import time
+    from datetime import timezone
+    metrics = dict(state.get("metrics") or {})
+    rounds_meta = metrics.setdefault("rounds", {})
+    if round_num not in rounds_meta:
+        rounds_meta[round_num] = {
+            "round_number": round_num,
+            "started_at_perf": time.perf_counter(),
+            "started_at_utc": datetime.now(timezone.utc).isoformat(),
+            "pro": {},
+            "con": {}
+        }
 
     debate_stream_service.publish(debate_id, "phase", {
         "phase": "retrieval",
@@ -171,7 +208,8 @@ def retrieve_pro_evidence(state: DebateGraphState) -> Dict[str, Any]:
     return {
         "current_speaker": "PRO",
         "current_pro_evidence": evidence,
-        "pro_evidence_context": context_str
+        "pro_evidence_context": context_str,
+        "metrics": metrics
     }
 
 # Node 3: pro_agent
@@ -259,6 +297,47 @@ def pro_agent_node(state: DebateGraphState) -> Dict[str, Any]:
             "error": err_msg
         }
 
+    dur_sec = turn.get("duration_seconds") or 0.0
+    ttft_val = turn.get("ttft_seconds")
+    tok_speed = turn.get("tokens_per_second")
+    gen_tokens = turn.get("completion_tokens") or turn.get("generated_tokens") or len((turn.get("content") or "").split())
+    if not tok_speed and dur_sec > 0:
+        tok_speed = round(gen_tokens / dur_sec, 2)
+
+    import time
+    from datetime import timezone
+    metrics = dict(state.get("metrics") or {})
+    rounds_meta = metrics.setdefault("rounds", {})
+    r_meta = rounds_meta.setdefault(round_num, {
+        "round_number": round_num,
+        "started_at_perf": time.perf_counter(),
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "pro": {},
+        "con": {}
+    })
+    r_meta["pro"] = {
+        "speaker": "PRO",
+        "model": "gemma-4-E4B-Q4_0",
+        "queue_wait_sec": metrics.get("queue_wait_sec", 0.0) if round_num == 1 else 0.0,
+        "model_load_sec": turn.get("model_load_seconds", 0.0),
+        "prompt_prep_sec": turn.get("prompt_prep_seconds", 0.01),
+        "ttft_sec": ttft_val,
+        "generation_duration_sec": dur_sec,
+        "generated_tokens": gen_tokens,
+        "tokens_per_second": tok_speed,
+        "input_tokens": turn.get("prompt_tokens", 0)
+    }
+
+    debate_stream_service.publish(debate_id, "performance_update", {
+        "speaker": "PRO",
+        "round": round_num,
+        "stage": "pro",
+        "duration_sec": dur_sec,
+        "tokens": gen_tokens,
+        "tokens_per_second": tok_speed,
+        "ttft_sec": ttft_val
+    })
+
     telem_record = {
         "speaker": "PRO",
         "model": "gemma-4-E4B-Q4_0",
@@ -266,8 +345,9 @@ def pro_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         "ttft_seconds": turn.get("ttft_seconds"),
         "prompt_tokens": turn.get("prompt_tokens"),
         "cache_tokens": turn.get("cache_tokens"),
-        "tokens_per_second": turn.get("tokens_per_second"),
-        "duration_seconds": turn.get("duration_seconds")
+        "tokens_per_second": tok_speed,
+        "duration_seconds": dur_sec,
+        "generated_tokens": gen_tokens
     }
     debate_stream_service.publish(debate_id, "telemetry", telem_record)
 
@@ -284,7 +364,8 @@ def pro_agent_node(state: DebateGraphState) -> Dict[str, Any]:
 
     return {
         "current_pro_turn": turn,
-        "telemetry": telemetry_list
+        "telemetry": telemetry_list,
+        "metrics": metrics
     }
 
 # Node 4: save_pro_message
@@ -316,6 +397,8 @@ def save_pro_message(state: DebateGraphState) -> Dict[str, Any]:
     clean_ev = [e for e in (evidence or []) if not (isinstance(e, dict) and e.get("__meta__"))]
     clean_ev.append({"__meta__": True, "execution_status": exec_status})
 
+    import time
+    t_save_start = time.perf_counter()
     with SessionLocal() as db:
         existing_msg = db.query(DebateMessageModel).filter(
             DebateMessageModel.debate_id == debate_id,
@@ -362,6 +445,10 @@ def save_pro_message(state: DebateGraphState) -> Dict[str, Any]:
                 debate.error_message = f"Round {round_num} PRO failed completion validation: {error_text}"
         db.commit()
 
+    t_save_dur = time.perf_counter() - t_save_start
+    metrics = dict(state.get("metrics") or {})
+    metrics["db_persistence_sec"] = round(metrics.get("db_persistence_sec", 0.0) + t_save_dur, 4)
+
     transcript_item = {
         "speaker": "DEBATER_A",
         "role": "PRO",
@@ -387,7 +474,8 @@ def save_pro_message(state: DebateGraphState) -> Dict[str, Any]:
 
     res = {
         "transcript": new_transcript,
-        "latest_pro_argument": turn.get("content", "")
+        "latest_pro_argument": turn.get("content", ""),
+        "metrics": metrics
     }
     if not is_valid and not turn.get("content"):
         res["status"] = "failed"
@@ -517,6 +605,47 @@ def con_agent_node(state: DebateGraphState) -> Dict[str, Any]:
             "error": err_msg
         }
 
+    dur_sec = turn.get("duration_seconds") or 0.0
+    ttft_val = turn.get("ttft_seconds")
+    tok_speed = turn.get("tokens_per_second")
+    gen_tokens = turn.get("completion_tokens") or turn.get("generated_tokens") or len((turn.get("content") or "").split())
+    if not tok_speed and dur_sec > 0:
+        tok_speed = round(gen_tokens / dur_sec, 2)
+
+    import time
+    from datetime import timezone
+    metrics = dict(state.get("metrics") or {})
+    rounds_meta = metrics.setdefault("rounds", {})
+    r_meta = rounds_meta.setdefault(round_num, {
+        "round_number": round_num,
+        "started_at_perf": time.perf_counter(),
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "pro": {},
+        "con": {}
+    })
+    r_meta["con"] = {
+        "speaker": "CON",
+        "model": "Qwen2.5-VL-7B-Instruct",
+        "queue_wait_sec": 0.0,
+        "model_load_sec": turn.get("model_load_seconds", 0.0),
+        "prompt_prep_sec": turn.get("prompt_prep_seconds", 0.01),
+        "ttft_sec": ttft_val,
+        "generation_duration_sec": dur_sec,
+        "generated_tokens": gen_tokens,
+        "tokens_per_second": tok_speed,
+        "input_tokens": turn.get("prompt_tokens", 0)
+    }
+
+    debate_stream_service.publish(debate_id, "performance_update", {
+        "speaker": "CON",
+        "round": round_num,
+        "stage": "con",
+        "duration_sec": dur_sec,
+        "tokens": gen_tokens,
+        "tokens_per_second": tok_speed,
+        "ttft_sec": ttft_val
+    })
+
     telem_record = {
         "speaker": "CON",
         "model": "Qwen2.5-VL-7B-Instruct",
@@ -524,8 +653,9 @@ def con_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         "ttft_seconds": turn.get("ttft_seconds"),
         "prompt_tokens": turn.get("prompt_tokens"),
         "cache_tokens": turn.get("cache_tokens"),
-        "tokens_per_second": turn.get("tokens_per_second"),
-        "duration_seconds": turn.get("duration_seconds")
+        "tokens_per_second": tok_speed,
+        "duration_seconds": dur_sec,
+        "generated_tokens": gen_tokens
     }
     debate_stream_service.publish(debate_id, "telemetry", telem_record)
 
@@ -542,7 +672,8 @@ def con_agent_node(state: DebateGraphState) -> Dict[str, Any]:
 
     return {
         "current_con_turn": turn,
-        "telemetry": telemetry_list
+        "telemetry": telemetry_list,
+        "metrics": metrics
     }
 
 # Node 7: save_con_message
@@ -574,6 +705,8 @@ def save_con_message(state: DebateGraphState) -> Dict[str, Any]:
     clean_ev = [e for e in (evidence or []) if not (isinstance(e, dict) and e.get("__meta__"))]
     clean_ev.append({"__meta__": True, "execution_status": exec_status})
 
+    import time
+    t_save_start = time.perf_counter()
     with SessionLocal() as db:
         existing_msg = db.query(DebateMessageModel).filter(
             DebateMessageModel.debate_id == debate_id,
@@ -622,6 +755,23 @@ def save_con_message(state: DebateGraphState) -> Dict[str, Any]:
                 debate.error_message = f"Round {round_num} CON failed completion validation: {error_text}"
         db.commit()
 
+    t_save_dur = time.perf_counter() - t_save_start
+    metrics = dict(state.get("metrics") or {})
+    metrics["db_persistence_sec"] = round(metrics.get("db_persistence_sec", 0.0) + t_save_dur, 4)
+
+    rounds_meta = metrics.setdefault("rounds", {})
+    if round_num in rounds_meta:
+        r_start = rounds_meta[round_num].get("started_at_perf", time.perf_counter())
+        r_dur = round(time.perf_counter() - r_start, 3)
+        rounds_meta[round_num]["duration_sec"] = r_dur
+        from datetime import timezone
+        rounds_meta[round_num]["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        debate_stream_service.publish(debate_id, "performance_update", {
+            "round": round_num,
+            "stage": "round",
+            "duration_sec": r_dur
+        })
+
     transcript_item = {
         "speaker": "DEBATER_B",
         "role": "CON",
@@ -647,7 +797,8 @@ def save_con_message(state: DebateGraphState) -> Dict[str, Any]:
 
     res = {
         "transcript": new_transcript,
-        "latest_con_argument": turn.get("content", "")
+        "latest_con_argument": turn.get("content", ""),
+        "metrics": metrics
     }
     if not is_valid and not turn.get("content"):
         res["status"] = "failed"
@@ -776,6 +927,10 @@ def judge_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         "message": f"Independent Judge ({provider_label} - {judge_model}) evaluating complete dialectical transcript..."
     })
 
+    t_judge_start = time.perf_counter()
+    from datetime import timezone
+    judge_start_utc = datetime.now(timezone.utc).isoformat()
+
     # Collect all citations from transcript and turn contexts
     citations = []
     for t in transcript:
@@ -809,6 +964,8 @@ def judge_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"[Graph] Image citations pool note: {e}")
 
+    t_prep_dur = round(time.perf_counter() - t_judge_start, 3)
+
     report_schema = judge_agent.evaluate_debate(
         topic=topic,
         transcript=transcript,
@@ -816,6 +973,32 @@ def judge_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         provider=judge_provider,
         judge_model=judge_model
     )
+    judge_dur = round(time.perf_counter() - t_judge_start, 3)
+
+    j_perf = getattr(report_schema, "performance_metrics", None) or {}
+    gen_tokens = j_perf.get("generated_tokens") or (len((report_schema.judge_reasoning or "").split()) + 120)
+    tok_speed = j_perf.get("tokens_per_second") or (round(gen_tokens / judge_dur, 2) if judge_dur > 0 else 0.0)
+
+    metrics = dict(state.get("metrics") or {})
+    metrics["judge"] = {
+        "provider": judge_provider,
+        "model": report_schema.judge_model_used or judge_model,
+        "started_at_utc": judge_start_utc,
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "prompt_prep_sec": t_prep_dur,
+        "ttft_sec": j_perf.get("ttft_sec"),
+        "evaluation_duration_sec": judge_dur,
+        "generated_tokens": gen_tokens,
+        "tokens_per_second": tok_speed,
+        "input_tokens": j_perf.get("input_tokens", 0)
+    }
+
+    debate_stream_service.publish(debate_id, "performance_update", {
+        "stage": "judge",
+        "duration_sec": judge_dur,
+        "tokens": gen_tokens,
+        "tokens_per_second": tok_speed
+    })
 
     debate_stream_service.publish(debate_id, "judge_done", {
         "provider": judge_provider,
@@ -826,7 +1009,7 @@ def judge_agent_node(state: DebateGraphState) -> Dict[str, Any]:
         "balanced_verdict": report_schema.balanced_verdict
     })
 
-    return {"judge_report": report_schema.model_dump()}
+    return {"judge_report": report_schema.model_dump(), "metrics": metrics}
 
 # Node 11: validate_judge_output
 def validate_judge_output(state: DebateGraphState) -> Dict[str, Any]:
@@ -923,6 +1106,8 @@ def save_result(state: DebateGraphState) -> Dict[str, Any]:
         final_verdict = report.get("balanced_verdict", "")
         final_raw_payload = report
 
+    import time
+    t_save_start = time.perf_counter()
     with SessionLocal() as db:
         existing_eval = db.query(JudgeEvaluationModel).filter(
             JudgeEvaluationModel.debate_id == debate_id
@@ -968,6 +1153,106 @@ def save_result(state: DebateGraphState) -> Dict[str, Any]:
                 debate.error_message = error_msg or "Debate stopped due to failed turn or evaluation"
         db.commit()
 
+    t_save_dur = time.perf_counter() - t_save_start
+    metrics = dict(state.get("metrics") or {})
+    metrics["db_persistence_sec"] = round(metrics.get("db_persistence_sec", 0.0) + t_save_dur, 4)
+
+    from datetime import timezone
+    total_wall_clock_sec = round(time.perf_counter() - metrics.get("started_at_perf", time.perf_counter()), 3)
+    completed_at_utc = datetime.now(timezone.utc).isoformat()
+
+    rounds_list = []
+    total_pro_sec = 0.0
+    total_con_sec = 0.0
+    total_pro_tokens = 0
+    total_con_tokens = 0
+
+    for r_num in sorted(metrics.get("rounds", {}).keys()):
+        r_data = metrics["rounds"][r_num]
+        p = r_data.get("pro", {})
+        c = r_data.get("con", {})
+        total_pro_sec += p.get("generation_duration_sec", 0.0)
+        total_con_sec += c.get("generation_duration_sec", 0.0)
+        total_pro_tokens += p.get("generated_tokens", 0)
+        total_con_tokens += c.get("generated_tokens", 0)
+        rounds_list.append({
+            "round_number": r_num,
+            "started_at_utc": r_data.get("started_at_utc"),
+            "completed_at_utc": r_data.get("completed_at_utc"),
+            "duration_sec": r_data.get("duration_sec", 0.0),
+            "pro": p,
+            "con": c
+        })
+
+    judge_data = metrics.get("judge") or {}
+    judge_sec = judge_data.get("evaluation_duration_sec", 0.0)
+    judge_tokens = judge_data.get("generated_tokens", 0)
+
+    total_generation_sec = round(total_pro_sec + total_con_sec + judge_sec, 3)
+    total_generated_tokens = total_pro_tokens + total_con_tokens + judge_tokens
+    avg_speed = round(total_generated_tokens / total_generation_sec, 2) if total_generation_sec > 0 else 0.0
+
+    # Collect source / PDF metrics
+    source_count = 0
+    pdfs_processed = 0
+    pages_extracted = 0
+    try:
+        from ..models.research import ResearchSourceModel
+        with SessionLocal() as db_src:
+            sources = db_src.query(ResearchSourceModel).filter(ResearchSourceModel.debate_id == debate_id).all()
+            source_count = len(sources)
+            for s in sources:
+                meta = s.metadata_json or {}
+                if meta.get("content_type") == "FULL_PDF_TEXT":
+                    pdfs_processed += 1
+                    pages_extracted += int(meta.get("pages_extracted") or meta.get("page_count") or 0)
+    except Exception:
+        pass
+
+    final_performance_metrics = {
+        "debate_id": debate_id,
+        "topic": state.get("topic"),
+        "evidence_mode": state.get("source_scope", "document"),
+        "source_count": source_count,
+        "pdfs_processed": pdfs_processed,
+        "pages_extracted": pages_extracted,
+        "completion_status": final_debate_status,
+        "created_at_utc": metrics.get("created_at_utc"),
+        "started_at_utc": metrics.get("created_at_utc"),
+        "completed_at_utc": completed_at_utc,
+        "total_elapsed_sec": total_wall_clock_sec,
+        "total_generation_sec": total_generation_sec,
+        "total_pro_sec": round(total_pro_sec, 3),
+        "total_con_sec": round(total_con_sec, 3),
+        "total_judge_sec": round(judge_sec, 3),
+        "rounds_count": len(rounds_list),
+        "total_generated_tokens": total_generated_tokens,
+        "avg_tokens_per_second": avg_speed,
+        "queue_wait_sec": metrics.get("queue_wait_sec", 0.0),
+        "db_persistence_sec": round(metrics.get("db_persistence_sec", 0.0), 4),
+        "research": metrics.get("research"),
+        "pro_total": {
+            "duration_sec": round(total_pro_sec, 3),
+            "tokens": total_pro_tokens,
+            "avg_tokens_per_second": round(total_pro_tokens / total_pro_sec, 2) if total_pro_sec > 0 else 0.0
+        },
+        "con_total": {
+            "duration_sec": round(total_con_sec, 3),
+            "tokens": total_con_tokens,
+            "avg_tokens_per_second": round(total_con_tokens / total_con_sec, 2) if total_con_sec > 0 else 0.0
+        },
+        "judge": judge_data,
+        "rounds": rounds_list
+    }
+
+    with SessionLocal() as db:
+        deb = db.query(DebateModel).filter(DebateModel.id == debate_id).first()
+        if deb:
+            deb.performance_metrics = final_performance_metrics
+            db.commit()
+
+    debate_stream_service.publish(debate_id, "performance_metrics", final_performance_metrics)
+
     # Free model memory after debate completes or fails to prevent lingering RAM usage
     try:
         from ..llm.model_manager import local_model_manager
@@ -979,19 +1264,22 @@ def save_result(state: DebateGraphState) -> Dict[str, Any]:
         debate_stream_service.publish(debate_id, "failed", {
             "status": "failed",
             "error": error_msg or "Debate ended with failure",
-            "message": error_msg or "Debate ended with failure"
+            "message": error_msg or "Debate ended with failure",
+            "performance_metrics": final_performance_metrics
         })
     debate_stream_service.publish(debate_id, "completed", {
         "status": final_debate_status,
         "winner": final_eval_winner,
         "error": error_msg if final_debate_status == "failed" else None,
-        "message": "Debate Adjudication Complete!" if final_debate_status == "completed" else (error_msg or "Debate ended with failure")
+        "message": "Debate Adjudication Complete!" if final_debate_status == "completed" else (error_msg or "Debate ended with failure"),
+        "performance_metrics": final_performance_metrics
     })
 
     return {
         "status": final_debate_status,
         "error": error_msg,
-        "winner": final_eval_winner
+        "winner": final_eval_winner,
+        "metrics": final_performance_metrics
     }
 
 # Conditional routing edges

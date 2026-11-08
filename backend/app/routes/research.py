@@ -43,7 +43,11 @@ def conduct_research(
                 url=s["url"],
                 snippet=s.get("content", "")[:240] + "..." if len(s.get("content", "")) > 240 else s.get("content", ""),
                 publishedDate=s.get("published_date"),
-                retrievalTimestamp=s.get("published_date") or ""
+                retrievalTimestamp=s.get("published_date") or "",
+                contentType=s.get("content_type", "SEARCH_SNIPPET_ONLY"),
+                pageCount=s.get("page_count"),
+                pagesExtracted=s.get("pages_extracted"),
+                contentHash=s.get("content_hash")
             )
             for s in result.get("sources", [])
         ]
@@ -53,6 +57,8 @@ def conduct_research(
                 claim=ev.get("claim", ""),
                 source=ev.get("source", ""),
                 url=ev.get("url"),
+                page=ev.get("page"),
+                contentType=ev.get("contentType") or ev.get("content_type"),
                 publishedDate=ev.get("publishedDate")
             )
             for ev in result.get("evidence_items", [])
@@ -79,7 +85,8 @@ def conduct_research(
             stages=stages_schema,
             indexedChunks=result.get("indexed_chunks", 0),
             status=result.get("status", "completed"),
-            message=result.get("message", default_message)
+            message=result.get("message", default_message),
+            timings=result.get("timings")
         )
     except Exception as e:
         logger.error(f"Error during research execution: {e}")

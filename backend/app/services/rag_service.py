@@ -84,23 +84,44 @@ class RAGService:
             logger.error(f"[RAG] Query vector dimension mismatch: {len(query_vector)} != 384. Aborting retrieval.")
             return []
 
-        # 3. Scoped search in Qdrant
+        # 3. Scoped search in Qdrant with expanded candidate pool for web research diversity
+        fetch_k = max(self.top_k * 3, 10) if target_source_type == "web" else self.top_k
         raw_hits = qdrant_service.search_evidence(
             query_vector=query_vector,
             document_id=target_doc_id,
             source_type=target_source_type,
-            top_k=self.top_k
+            top_k=fetch_k
         )
 
-        # 4. Deduplicate and rank
+        # 4. Deduplicate and apply source diversity across distinct URLs/sources
         seen_texts = set()
         deduped = []
+        source_counts: Dict[str, int] = {}
+        max_per_source = 2 if target_source_type == "web" else self.top_k
+
+        # Primary pass: pick high-scoring chunks while guaranteeing source diversity
         for hit in raw_hits:
             content = hit.get("content", "").strip()
             if not content or content in seen_texts:
                 continue
-            seen_texts.add(content)
-            deduped.append(hit)
+            src_key = hit.get("url") or hit.get("title") or "default"
+            if source_counts.get(src_key, 0) < max_per_source:
+                seen_texts.add(content)
+                source_counts[src_key] = source_counts.get(src_key, 0) + 1
+                deduped.append(hit)
+                if len(deduped) >= self.top_k:
+                    break
+
+        # Secondary pass: if target top_k is not filled, add remaining valid hits
+        if len(deduped) < self.top_k:
+            for hit in raw_hits:
+                content = hit.get("content", "").strip()
+                if not content or content in seen_texts:
+                    continue
+                seen_texts.add(content)
+                deduped.append(hit)
+                if len(deduped) >= self.top_k:
+                    break
 
         # Supplement with discrete image visual evidence items if this is an image document
         if is_image_doc and image_visual_ev:
@@ -143,23 +164,30 @@ class RAGService:
                     "is_image": True
                 })
             else:
-                source_label = hit.get("title") or (
-                    f"Document (Page {hit.get('page_number')})" if hit.get("page_number") else "Document"
+                ev_type = hit.get("evidence_type") or ("web_pdf" if hit.get("source_type") == "web" and hit.get("page_number", 0) > 0 else "document")
+                content_type = (
+                    "FULL_PDF_TEXT" if ev_type == "web_pdf"
+                    else ("FULL_HTML_ARTICLE" if ev_type == "web_html"
+                    else ("SEARCH_SNIPPET_ONLY" if ev_type == "search_snippet" else "DOCUMENT"))
                 )
-                sec_name = hit.get("section_title") or "Document Analysis"
                 pg = hit.get("page_number")
-                pg_str = f" (Page {pg})" if pg else ""
+                pg_str = f" (Page {pg})" if (pg and pg > 0) else ""
+                source_title = hit.get("title") or "Document"
+                source_label = f"{source_title}{pg_str}" if (pg and pg > 0 and f"Page {pg}" not in source_title) else source_title
+                sec_name = hit.get("section_title") or "Analysis"
+
                 formatted_evidence.append({
                     "id": hit.get("id"),
                     "claim": f"Evidentiary finding from {sec_name}{pg_str}",
                     "source": source_label,
-                    "page": hit.get("page_number"),
+                    "page": pg,
                     "section": hit.get("section_title"),
                     "url": hit.get("url") or None,
                     "content": hit.get("content"),
                     "verdict": verdict,
                     "confidenceScore": round(min(max(score * 100, 50.0), 99.0), 1),
-                    "is_image": False
+                    "is_image": False,
+                    "contentType": content_type
                 })
 
         return formatted_evidence
@@ -209,13 +237,15 @@ class RAGService:
             source_info = f"Source: {ev.get('source')}"
             if ev.get("page"):
                 source_info += f", Page {ev.get('page')}"
-            if ev.get("section"):
+            if ev.get("section") and ev.get("section") != ev.get("source"):
                 source_info += f", Section: {ev.get('section')}"
             if ev.get("url"):
                 source_info += f", URL: {ev.get('url')}"
+            if ev.get("contentType"):
+                source_info += f" [{ev.get('contentType')}]"
             raw_content = (ev.get("content") or "").strip()
-            if len(raw_content) > 260:
-                snippet = raw_content[:250].rsplit(" ", 1)[0] + "..."
+            if len(raw_content) > 280:
+                snippet = raw_content[:270].rsplit(" ", 1)[0] + "..."
             else:
                 snippet = raw_content
             lines.append(f"[{idx}] {source_info}\nVerified Passage Excerpt: \"{snippet}\"\n")

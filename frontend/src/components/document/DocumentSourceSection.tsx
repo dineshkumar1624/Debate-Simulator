@@ -135,7 +135,7 @@ export const DocumentSourceSection: React.FC<DocumentSourceSectionProps> = ({
           </div>
         </div>
       ) : (
-        <div className="rounded-3xl border border-indigo-200/90 dark:border-indigo-500/30 bg-gradient-to-br from-indigo-50/90 via-white to-sky-50/60 dark:from-[#0a1026] dark:via-[#080d1e] dark:to-[#050814] p-5 sm:p-6 shadow-md backdrop-blur-2xl transition-all">
+        <div className="rounded-3xl border border-indigo-200/90 dark:border-indigo-500/30 bg-gradient-to-br from-indigo-50/90 via-white to-sky-50/60 dark:from-[#0d1322] dark:via-[#090d18] dark:to-[#05070d] p-5 sm:p-6 shadow-md backdrop-blur-2xl transition-all">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
             {/* Document metadata display */}
             <div className="flex items-start sm:items-center gap-4 min-w-0">

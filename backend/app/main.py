@@ -55,6 +55,19 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Embedding model pre-warming warning: {ex}")
     threading.Thread(target=_warmup_embeddings, daemon=True, name="embedding-warmer").start()
 
+    # Ensure performance_metrics column exists on debates table
+    from sqlalchemy import inspect, text
+    try:
+        with engine.connect() as conn:
+            insp = inspect(engine)
+            cols = [c["name"] for c in insp.get_columns("debates")]
+            if "performance_metrics" not in cols:
+                conn.execute(text("ALTER TABLE debates ADD COLUMN performance_metrics JSON"))
+                conn.commit()
+                logger.info("Migrated debates table: added performance_metrics column.")
+    except Exception as e:
+        logger.warning(f"Schema reconciliation check for performance_metrics: {e}")
+
     # Startup reconciliation: reconcile any stale debates interrupted by past server shutdowns
     from .database.session import SessionLocal
     from .models.debate import DebateModel

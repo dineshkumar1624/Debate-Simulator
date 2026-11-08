@@ -117,6 +117,8 @@ export interface DebateSession {
   startedAtIso?: string;
   elapsedSeconds?: number;
   researchSources?: ResearchSource[];
+  performanceMetrics?: Record<string, any>;
+  researchTimings?: Record<string, any>;
 }
 
 export interface StartDebateRequest {
@@ -130,6 +132,7 @@ export interface StartDebateRequest {
   documentId?: string;
   sourceScope?: string;
   strictFactChecking?: boolean;
+  researchTimings?: Record<string, any>;
 }
 
 export interface StartDebateResponse {
@@ -257,6 +260,10 @@ export interface ResearchSource {
   snippet: string;
   publishedDate?: string;
   retrievalTimestamp?: string;
+  contentType?: 'FULL_PDF_TEXT' | 'FULL_HTML_ARTICLE' | 'SEARCH_SNIPPET_ONLY';
+  pageCount?: number;
+  pagesExtracted?: number;
+  contentHash?: string;
 }
 
 export interface ResearchEvidenceItem {
@@ -264,6 +271,8 @@ export interface ResearchEvidenceItem {
   claim: string;
   source: string;
   url?: string;
+  page?: number;
+  contentType?: string;
   publishedDate?: string;
 }
 
@@ -283,4 +292,5 @@ export interface ResearchResponse {
   indexedChunks: number;
   status: 'completed' | 'empty' | 'failed';
   message: string;
+  timings?: Record<string, any>;
 }

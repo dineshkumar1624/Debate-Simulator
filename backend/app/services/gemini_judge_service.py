@@ -257,6 +257,8 @@ class GeminiJudgeService:
                     meta_parts.append(f"URL: {url}")
                 if page is not None and not ev.get("is_image"):
                     meta_parts.append(f"Page: {page}")
+                if ev.get("contentType"):
+                    meta_parts.append(f"Content Type: {ev.get('contentType')}")
                 meta_line = " | ".join(meta_parts)
                 raw_txt = ev.get("excerpt") or ev.get("content") or ev.get("text") or ev.get("claim") or ev.get("relevance_explanation") or ""
                 transcript_lines.append(f"Evidence [{idx}] ({meta_line}):\n{raw_txt[:350]}\n")
@@ -461,6 +463,21 @@ class GeminiJudgeService:
                 parsed_data["judge_model_used"] = model_id
                 parsed_data["is_fallback"] = False
                 parsed_data["execution_status"] = "REAL_REMOTE_API"
+
+                usage = getattr(response, "usage_metadata", None)
+                prompt_toks = getattr(usage, "prompt_token_count", 0) if usage else len(user_prompt.split())
+                gen_toks = getattr(usage, "candidates_token_count", 0) if usage else len(raw_text.split())
+                tok_speed = round(gen_toks / req_duration, 2) if req_duration > 0 else 0.0
+
+                parsed_data["performance_metrics"] = {
+                    "provider": "gemini",
+                    "model": model_id,
+                    "evaluation_duration_sec": round(req_duration, 3),
+                    "generated_tokens": gen_toks,
+                    "input_tokens": prompt_toks,
+                    "tokens_per_second": tok_speed,
+                    "ttft_sec": None
+                }
                 
                 # Apply citation discipline and assessment
                 parsed_data = self._apply_citation_discipline(parsed_data, transcript, evidence_citations)

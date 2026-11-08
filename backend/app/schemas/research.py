@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
 class ResearchStageSchema(BaseModel):
@@ -12,6 +12,8 @@ class ResearchEvidenceItem(BaseModel):
     claim: str
     source: str
     url: Optional[str] = None
+    page: Optional[int] = None
+    contentType: Optional[str] = None
     publishedDate: Optional[str] = None
 
 class ResearchSourceSchema(BaseModel):
@@ -21,6 +23,10 @@ class ResearchSourceSchema(BaseModel):
     snippet: str
     publishedDate: Optional[str] = None
     retrievalTimestamp: str
+    contentType: Optional[str] = "SEARCH_SNIPPET_ONLY" # "FULL_PDF_TEXT", "FULL_HTML_ARTICLE", "SEARCH_SNIPPET_ONLY"
+    pageCount: Optional[int] = None
+    pagesExtracted: Optional[int] = None
+    contentHash: Optional[str] = None
 
 class ResearchRequest(BaseModel):
     topic: str
@@ -36,3 +42,4 @@ class ResearchResponse(BaseModel):
     indexedChunks: int
     status: str = "completed" # "completed", "empty", "failed"
     message: str = "Web evidence gathered and indexed"
+    timings: Optional[Dict[str, Any]] = None

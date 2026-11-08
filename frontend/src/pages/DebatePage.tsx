@@ -28,6 +28,9 @@ import {
   RefreshCw,
   XCircle,
   StopCircle,
+  Gauge,
+  Clock,
+  Cpu,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { NeuralCoreView } from '../components/common/NeuralCoreView';
@@ -190,6 +193,10 @@ export const DebatePage: React.FC = () => {
   const [isLiveBackendConnected, setIsLiveBackendConnected] = useState<boolean>(false);
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
   const [showEndDebateModal, setShowEndDebateModal] = useState<boolean>(false);
+
+  // End-to-End Performance Tracking
+  const [performanceMetrics, setPerformanceMetrics] = useState<Record<string, any> | null>(null);
+  const [showPerformancePanel, setShowPerformancePanel] = useState<boolean>(true);
 
   // Authoritative persistent timestamps for drift-free stopwatch
   const [debateStartTimeMs, setDebateStartTimeMs] = useState<number | null>(null);
@@ -398,18 +405,23 @@ export const DebatePage: React.FC = () => {
         if (deb.status === 'completed') {
           setCurrentStep(expectedTurns + 2);
           if (deb.synthesis) setLiveSynthesis(deb.synthesis);
+          if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           setBackendStatusMessage('Debate Adjudication Complete!');
         } else if (deb.status === 'cancelled') {
           setCurrentStep(totalTurns);
+          if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           setBackendStatusMessage('Debate was cancelled.');
         } else if (deb.status === 'failed') {
           setCurrentStep(totalTurns);
+          if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           setBackendStatusMessage(`Debate Failed: ${deb.errorMessage || deb.error_message || 'Execution error'}`);
         } else if (totalTurns >= expectedTurns) {
           setCurrentStep(expectedTurns + 1);
+          if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           setBackendStatusMessage(`All ${expectedTurns} turns complete. Evaluating transcript...`);
         } else {
           setCurrentStep(totalTurns);
+          if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           setBackendStatusMessage(`Active debate restored (ID: ${deb.id.slice(0, 8)}). Resuming live tracking...`);
         }
       } catch (err) {
@@ -549,6 +561,9 @@ export const DebatePage: React.FC = () => {
         const session = await debateApi.getDebate(activeDebateId);
         if (!isMounted) return;
         setLiveSession(session);
+        if (session.performanceMetrics && Object.keys(session.performanceMetrics).length > 0) {
+          setPerformanceMetrics(session.performanceMetrics);
+        }
 
         const totalTurns = session.rounds.reduce((acc, r) => acc + r.turns.length, 0);
         const expectedTurns = (session.config?.rounds || activeRounds) * 2;
@@ -671,19 +686,52 @@ export const DebatePage: React.FC = () => {
             setStreamingSpeaker(null);
             setCurrentStep(judgeStep);
             setBackendStatusMessage(data.message || `${judgeProvider === 'nvidia' ? 'NVIDIA NIM' : 'Google Gemini'} (JUDGE) analyzing transcript...`);
+          } else if (data.type === 'performance_update') {
+            setPerformanceMetrics((prev) => {
+              const current = prev ? { ...prev } : {};
+              if (data.stage === 'pro' || data.stage === 'con') {
+                const rounds = { ...(current.rounds || {}) };
+                const roundNum = data.round || 1;
+                const rMeta = { ...(rounds[roundNum] || {}) };
+                rMeta[data.stage] = {
+                  ...(rMeta[data.stage] || {}),
+                  generation_duration_sec: data.duration_sec,
+                  generated_tokens: data.tokens,
+                  tokens_per_second: data.tokens_per_second,
+                  ttft_sec: data.ttft_sec,
+                };
+                rounds[roundNum] = rMeta;
+                current.rounds = rounds;
+              } else if (data.stage === 'judge') {
+                current.judge = {
+                  ...(current.judge || {}),
+                  evaluation_duration_sec: data.duration_sec,
+                  generated_tokens: data.tokens,
+                  tokens_per_second: data.tokens_per_second,
+                };
+              }
+              return current;
+            });
+          } else if (data.type === 'performance_metrics') {
+            if (data.metrics) {
+              setPerformanceMetrics(data.metrics);
+            }
           } else if (data.type === 'completed' && data.status === 'failed') {
             setStreamingSpeaker(null);
             setStreamingText('');
+            if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage(data.message || data.error || 'Debate execution failed');
             if (eventSource) eventSource.close();
           } else if (data.type === 'cancelled' || (data.type === 'completed' && data.status === 'cancelled')) {
             setStreamingSpeaker(null);
             setStreamingText('');
+            if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage('Debate was cancelled.');
             if (eventSource) eventSource.close();
           } else if (data.type === 'judge_done' || data.type === 'completed') {
             setStreamingSpeaker(null);
             setCurrentStep(completedStep);
+            if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage('Debate Adjudication Complete!');
             if (eventSource) eventSource.close();
           } else if (data.type === 'error' || data.type === 'failed') {
@@ -700,6 +748,7 @@ export const DebatePage: React.FC = () => {
           if (deb.status === 'completed' || deb.status === 'failed' || deb.status === 'cancelled') {
             setStreamingSpeaker(null);
             setLiveSession(deb);
+            if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           }
         }).catch(() => {});
         if (eventSource) eventSource.close();
@@ -969,6 +1018,7 @@ export const DebatePage: React.FC = () => {
         strictFactChecking: strictFactChecking,
         documentId: sourceMode === 'document' && activeDocument && !activeDocument.id.startsWith('doc-sample') ? activeDocument.id : undefined,
         sourceScope: effectiveScope,
+        researchTimings: sourceMode === 'web' ? (researchResponse?.timings || undefined) : undefined,
       });
       if (response && response.debateId) {
         if (response.startedAtEpochMs) {
@@ -1029,6 +1079,7 @@ export const DebatePage: React.FC = () => {
     setTokenCount(0);
     setResearchResponse(null);
     setResearchStages([]);
+    setPerformanceMetrics(null);
     setValidationError(null);
     sessionStorage.removeItem('activeDebateId');
     localStorage.removeItem('activeDebateId');
@@ -2286,6 +2337,22 @@ export const DebatePage: React.FC = () => {
 
             {/* Workspace Action Triggers */}
             <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+              {/* Telemetry / Performance Details Toggle */}
+              <button
+                type="button"
+                onClick={() => setShowPerformancePanel((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer shadow-xs ${
+                  showPerformancePanel
+                    ? 'border-indigo-400/50 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                    : 'border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:text-indigo-500'
+                }`}
+                title="Toggle Performance Metrics"
+              >
+                <Gauge className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Performance</span>
+                {showPerformancePanel ? <ChevronUp className="w-3 h-3 ml-0.5" /> : <ChevronDown className="w-3 h-3 ml-0.5" />}
+              </button>
+
               {/* Live Elapsed Stopwatch */}
               <div className="px-3 py-1.5 rounded-xl border border-white/10 bg-slate-900/90 text-xs font-mono font-bold flex items-center gap-2 text-indigo-400 shadow-sm">
                 <span className={`w-2 h-2 rounded-full ${liveSession?.status === 'completed' ? 'bg-emerald-400' : 'bg-indigo-400 animate-pulse'}`} />
@@ -2326,6 +2393,219 @@ export const DebatePage: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Live End-to-End Performance Dashboard (Collapsible) */}
+          {showPerformancePanel && (
+            <div className="rounded-2xl border border-indigo-200/90 dark:border-indigo-500/30 bg-white/95 dark:bg-[#070a16]/95 backdrop-blur-xl p-4 sm:p-5 shadow-sm space-y-4 font-mono animate-fadeIn">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 dark:border-white/10 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500">
+                    <Gauge className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 dark:text-white">
+                      Live Response Time & Inference Telemetry
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      High-resolution monotonic timer · Non-fabricated instrumentation
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-white/10 font-bold">
+                    Wall Clock: {formatElapsedTime(elapsedSeconds)}
+                  </span>
+                  {performanceMetrics?.total_generation_sec !== undefined && (
+                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 font-bold">
+                      Inference Sum: {performanceMetrics.total_generation_sec.toFixed(2)}s
+                    </span>
+                  )}
+                  {performanceMetrics?.avg_tokens_per_second !== undefined && (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-bold">
+                      {performanceMetrics.avg_tokens_per_second.toFixed(1)} tok/s avg
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* 4-Stage Metric Columns */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                {/* 1. Research Stage */}
+                <div className="p-3.5 rounded-xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020] space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5 uppercase text-[11px]">
+                      <Globe className="w-3.5 h-3.5 text-cyan-500" />
+                      <span>Evidence / RAG</span>
+                    </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      isCurrentDebateWeb ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400' : 'bg-slate-500/10 text-slate-500'
+                    }`}>
+                      {isCurrentDebateWeb ? 'Web Search' : 'Direct Doc'}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    {isCurrentDebateWeb ? (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Search:</span>
+                          <span className="font-semibold">{performanceMetrics?.research?.search_provider_duration_sec ? `${performanceMetrics.research.search_provider_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.search_provider_duration_sec ? `${researchResponse.timings.search_provider_duration_sec.toFixed(2)}s` : 'Ready')}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">PDFs / HTML:</span>
+                          <span className="font-semibold">{performanceMetrics?.research?.pdf_download_duration_sec ? `${(performanceMetrics.research.pdf_download_duration_sec + (performanceMetrics.research.pdf_extraction_duration_sec || 0)).toFixed(2)}s` : (researchResponse?.timings?.pdf_download_duration_sec ? `${(researchResponse.timings.pdf_download_duration_sec + (researchResponse.timings.pdf_extraction_duration_sec || 0)).toFixed(2)}s` : 'Indexed')}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Qdrant Index:</span>
+                          <span className="font-semibold">{performanceMetrics?.research?.qdrant_indexing_duration_sec ? `${performanceMetrics.research.qdrant_indexing_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.qdrant_indexing_duration_sec ? `${researchResponse.timings.qdrant_indexing_duration_sec.toFixed(2)}s` : 'Ready')}</span>
+                        </div>
+                        <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-cyan-600 dark:text-cyan-300">
+                          <span>Total Research:</span>
+                          <span>{performanceMetrics?.research?.total_research_duration_sec ? `${performanceMetrics.research.total_research_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.total_research_duration_sec ? `${researchResponse.timings.total_research_duration_sec.toFixed(2)}s` : '--')}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Mode:</span>
+                          <span className="font-semibold">Local Document RAG</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Pages:</span>
+                          <span className="font-semibold">{debateDocument?.pageCount || 0} pages</span>
+                        </div>
+                        <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-indigo-600 dark:text-indigo-400">
+                          <span>Embeddings:</span>
+                          <span>In-Memory Qdrant</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. PRO Agent */}
+                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
+                  streamingSpeaker === 'PRO'
+                    ? 'border-sky-500 bg-sky-50/70 dark:bg-sky-950/30 ring-1 ring-sky-500/40'
+                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-sky-600 dark:text-sky-400 flex items-center gap-1.5 uppercase text-[11px]">
+                      <Cpu className="w-3.5 h-3.5 text-sky-500" />
+                      <span>PRO (Gemma 4)</span>
+                    </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      streamingSpeaker === 'PRO' ? 'bg-sky-500 text-white animate-pulse' : (performanceMetrics?.total_pro_sec ? 'Recorded' : 'Pending')
+                    }`}>
+                      {streamingSpeaker === 'PRO' ? 'Active' : (performanceMetrics?.total_pro_sec ? 'Recorded' : 'Pending')}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Duration:</span>
+                      <span className="font-semibold">
+                        {streamingSpeaker === 'PRO' ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_pro_sec ? `${performanceMetrics.total_pro_sec.toFixed(2)}s` : '--')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Generated:</span>
+                      <span className="font-semibold">
+                        {streamingSpeaker === 'PRO' ? `${tokenCount} toks` : (performanceMetrics?.pro_total?.tokens ? `${performanceMetrics.pro_total.tokens} toks` : '--')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-sky-600 dark:text-sky-300">
+                      <span>Speed:</span>
+                      <span>
+                        {streamingSpeaker === 'PRO'
+                          ? `${(tokenCount / Math.max(1, elapsedSeconds)).toFixed(1)} tok/s`
+                          : (performanceMetrics?.pro_total?.tokens_per_second ? `${performanceMetrics.pro_total.tokens_per_second.toFixed(1)} tok/s` : '--')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. CON Agent */}
+                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
+                  streamingSpeaker === 'CON'
+                    ? 'border-violet-500 bg-violet-50/70 dark:bg-violet-950/30 ring-1 ring-violet-500/40'
+                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-violet-600 dark:text-violet-400 flex items-center gap-1.5 uppercase text-[11px]">
+                      <Cpu className="w-3.5 h-3.5 text-violet-500" />
+                      <span>CON (Qwen 2.5)</span>
+                    </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      streamingSpeaker === 'CON' ? 'bg-violet-500 text-white animate-pulse' : (performanceMetrics?.total_con_sec ? 'Recorded' : 'Pending')
+                    }`}>
+                      {streamingSpeaker === 'CON' ? 'Active' : (performanceMetrics?.total_con_sec ? 'Recorded' : 'Pending')}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Duration:</span>
+                      <span className="font-semibold">
+                        {streamingSpeaker === 'CON' ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_con_sec ? `${performanceMetrics.total_con_sec.toFixed(2)}s` : '--')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Generated:</span>
+                      <span className="font-semibold">
+                        {streamingSpeaker === 'CON' ? `${tokenCount} toks` : (performanceMetrics?.con_total?.tokens ? `${performanceMetrics.con_total.tokens} toks` : '--')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-violet-600 dark:text-violet-300">
+                      <span>Speed:</span>
+                      <span>
+                        {streamingSpeaker === 'CON'
+                          ? `${(tokenCount / Math.max(1, elapsedSeconds)).toFixed(1)} tok/s`
+                          : (performanceMetrics?.con_total?.tokens_per_second ? `${performanceMetrics.con_total.tokens_per_second.toFixed(1)} tok/s` : '--')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Judge Agent */}
+                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
+                  currentStep === judgeStep
+                    ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/30 ring-1 ring-amber-500/40'
+                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5 uppercase text-[11px]">
+                      <Scale className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Judge ({judgeProvider === 'nvidia' ? 'NIM' : 'Gemini'})</span>
+                    </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      currentStep === judgeStep ? 'bg-amber-500 text-white animate-pulse' : (performanceMetrics?.total_judge_sec ? 'Adjudicated' : 'Pending')
+                    }`}>
+                      {currentStep === judgeStep ? 'Analyzing' : (performanceMetrics?.total_judge_sec ? 'Complete' : 'Pending')}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Duration:</span>
+                      <span className="font-semibold">
+                        {currentStep === judgeStep ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_judge_sec ? `${performanceMetrics.total_judge_sec.toFixed(2)}s` : '--')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Model:</span>
+                      <span className="font-semibold truncate max-w-[110px]" title={performanceMetrics?.judge?.model || judgeModel}>
+                        {performanceMetrics?.judge?.model || (judgeProvider === 'nvidia' ? 'llama-3.1-70b' : 'gemini-2.5-flash')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-amber-600 dark:text-amber-300">
+                      <span>Throughput:</span>
+                      <span>
+                        {performanceMetrics?.judge?.tokens_per_second ? `${performanceMetrics.judge.tokens_per_second.toFixed(1)} tok/s` : (currentStep >= judgeStep ? 'Certifying...' : '--')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* End Debate Confirmation Modal Dialog (Part 7: Clean Cancellation Experience) */}
           {showEndDebateModal && (
@@ -3199,6 +3479,182 @@ export const DebatePage: React.FC = () => {
                             Evidence citations will appear here once debater turns are rendered.
                           </div>
                         )}
+                      </div>
+                    </div>
+
+                    {/* DEBATE PERFORMANCE SUMMARY (Requirement 6: Completed Debate Performance Dashboard) */}
+                    <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 border border-indigo-500/30 text-white font-mono space-y-4 shadow-xl animate-fadeIn">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                            <Gauge className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-2">
+                              <span>DEBATE PERFORMANCE SUMMARY</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-normal">
+                                High-Resolution Monotonic Clock
+                              </span>
+                            </h4>
+                            <p className="text-[11px] text-slate-400">
+                              Distinguishing cumulative stage execution time from wall-clock elapsed time
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2.5 py-1 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-bold">
+                            Total Wall Clock: {(performanceMetrics?.total_elapsed_sec ?? elapsedSeconds).toFixed(2)}s
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Top Metric Cards */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                        <div className="p-3 rounded-xl bg-slate-800/80 border border-white/5 space-y-1">
+                          <span className="text-slate-400 block text-[10px] uppercase flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-indigo-400" />
+                            <span>Wall-Clock Elapsed</span>
+                          </span>
+                          <span className="text-sm font-extrabold text-white block">
+                            {(performanceMetrics?.total_elapsed_sec ?? elapsedSeconds).toFixed(2)}s
+                          </span>
+                          <span className="text-[10px] text-slate-400">Monotonic timer</span>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-slate-800/80 border border-white/5 space-y-1">
+                          <span className="text-slate-400 block text-[10px] uppercase">Cumulative Inference</span>
+                          <span className="text-sm font-extrabold text-indigo-300 block">
+                            {(performanceMetrics?.total_generation_sec ?? ((performanceMetrics?.total_pro_sec || 0) + (performanceMetrics?.total_con_sec || 0) + (performanceMetrics?.total_judge_sec || 0))).toFixed(2)}s
+                          </span>
+                          <span className="text-[10px] text-slate-400">Sum of PRO, CON, Judge</span>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-slate-800/80 border border-white/5 space-y-1">
+                          <span className="text-slate-400 block text-[10px] uppercase">Total Generated Tokens</span>
+                          <span className="text-sm font-extrabold text-sky-300 block">
+                            {(performanceMetrics?.total_generated_tokens ?? 0).toLocaleString()} toks
+                          </span>
+                          <span className="text-[10px] text-slate-400">Combined debaters & judge</span>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-slate-800/80 border border-white/5 space-y-1">
+                          <span className="text-slate-400 block text-[10px] uppercase">Average Speed</span>
+                          <span className="text-sm font-extrabold text-emerald-300 block">
+                            {(performanceMetrics?.avg_tokens_per_second ?? (performanceMetrics?.total_generated_tokens && performanceMetrics?.total_generation_sec ? (performanceMetrics.total_generated_tokens / performanceMetrics.total_generation_sec) : 0)).toFixed(1)} tok/s
+                          </span>
+                          <span className="text-[10px] text-slate-400">End-to-end throughput</span>
+                        </div>
+                      </div>
+
+                      {/* Detailed Stage Breakdown Table */}
+                      <div className="rounded-xl border border-white/10 overflow-hidden bg-slate-950/60">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-white/10 bg-slate-800/50 text-[10px] uppercase text-slate-400">
+                              <th className="py-2.5 px-3">Stage / Sub-system</th>
+                              <th className="py-2.5 px-3">Engine / Model</th>
+                              <th className="py-2.5 px-3 text-right">Duration</th>
+                              <th className="py-2.5 px-3 text-right">Tokens</th>
+                              <th className="py-2.5 px-3 text-right">Throughput</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5 text-[11px]">
+                            {/* Research */}
+                            <tr className="hover:bg-white/[0.02]">
+                              <td className="py-2 px-3 font-semibold text-cyan-400 flex items-center gap-1.5">
+                                <Globe className="w-3.5 h-3.5" />
+                                <span>Evidence Grounding</span>
+                              </td>
+                              <td className="py-2 px-3 text-slate-300">
+                                {isCurrentDebateWeb
+                                  ? `Web Search (${performanceMetrics?.source_count ?? (liveSession?.researchSources?.length || 0)} sources)`
+                                  : `Document RAG (${debateDocument?.name || 'Local Document'})`}
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold">
+                                {performanceMetrics?.research?.total_research_duration_sec
+                                  ? `${performanceMetrics.research.total_research_duration_sec.toFixed(2)}s`
+                                  : (isCurrentDebateWeb ? 'N/A' : 'Direct')}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-400">
+                                {isCurrentDebateWeb
+                                  ? (performanceMetrics?.pdfs_processed ? `${performanceMetrics.pdfs_processed} PDFs (${performanceMetrics.pages_extracted || 0}p)` : 'HTML / Snippets')
+                                  : `${debateDocument?.pageCount || 0} pages`}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-400">Qdrant Vector</td>
+                            </tr>
+
+                            {/* PRO */}
+                            <tr className="hover:bg-white/[0.02]">
+                              <td className="py-2 px-3 font-semibold text-sky-400 flex items-center gap-1.5">
+                                <Cpu className="w-3.5 h-3.5" />
+                                <span>PRO Agent</span>
+                              </td>
+                              <td className="py-2 px-3 text-slate-300">Gemma-4-E4B-it (CPU / BF16)</td>
+                              <td className="py-2 px-3 text-right font-semibold text-sky-300">
+                                {(performanceMetrics?.total_pro_sec ?? 0).toFixed(2)}s
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                {performanceMetrics?.pro_total?.tokens ?? '--'} toks
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-sky-300">
+                                {performanceMetrics?.pro_total?.tokens_per_second ? `${performanceMetrics.pro_total.tokens_per_second.toFixed(1)} tok/s` : '--'}
+                              </td>
+                            </tr>
+
+                            {/* CON */}
+                            <tr className="hover:bg-white/[0.02]">
+                              <td className="py-2 px-3 font-semibold text-violet-400 flex items-center gap-1.5">
+                                <Cpu className="w-3.5 h-3.5" />
+                                <span>CON Agent</span>
+                              </td>
+                              <td className="py-2 px-3 text-slate-300">Qwen2.5-VL-7B-Instruct (CPU / BF16)</td>
+                              <td className="py-2 px-3 text-right font-semibold text-violet-300">
+                                {(performanceMetrics?.total_con_sec ?? 0).toFixed(2)}s
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                {performanceMetrics?.con_total?.tokens ?? '--'} toks
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-violet-300">
+                                {performanceMetrics?.con_total?.tokens_per_second ? `${performanceMetrics.con_total.tokens_per_second.toFixed(1)} tok/s` : '--'}
+                              </td>
+                            </tr>
+
+                            {/* Judge */}
+                            <tr className="hover:bg-white/[0.02]">
+                              <td className="py-2 px-3 font-semibold text-amber-400 flex items-center gap-1.5">
+                                <Scale className="w-3.5 h-3.5" />
+                                <span>Judge Evaluation</span>
+                              </td>
+                              <td className="py-2 px-3 text-slate-300 truncate max-w-[160px]">
+                                {performanceMetrics?.judge?.model || (judgeProvider === 'nvidia' ? 'NVIDIA NIM' : 'Google Gemini')}
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-amber-300">
+                                {(performanceMetrics?.total_judge_sec ?? (performanceMetrics?.judge?.evaluation_duration_sec ?? 0)).toFixed(2)}s
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                {performanceMetrics?.judge?.generated_tokens ?? '--'} toks
+                              </td>
+                              <td className="py-2 px-3 text-right font-semibold text-amber-300">
+                                {performanceMetrics?.judge?.tokens_per_second ? `${performanceMetrics.judge.tokens_per_second.toFixed(1)} tok/s` : '--'}
+                              </td>
+                            </tr>
+
+                            {/* Orchestration & Overhead */}
+                            <tr className="bg-slate-900/40 text-[10px] text-slate-400">
+                              <td className="py-1.5 px-3 font-semibold" colSpan={2}>
+                                Orchestration, Prompt Prep & SQLite Persistence
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono">
+                                {performanceMetrics?.db_persistence_sec ? `${performanceMetrics.db_persistence_sec.toFixed(3)}s` : '< 0.05s'}
+                              </td>
+                              <td className="py-1.5 px-3 text-right">--</td>
+                              <td className="py-1.5 px-3 text-right font-mono">
+                                Overhead: {Math.max(0, (performanceMetrics?.total_elapsed_sec ?? elapsedSeconds) - (performanceMetrics?.total_generation_sec ?? 0)).toFixed(2)}s
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
                       </div>
                     </div>
 

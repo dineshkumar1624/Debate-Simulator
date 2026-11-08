@@ -239,7 +239,7 @@ class Settings(BaseSettings):
         description="Maintain compact rolling summary across rounds instead of raw transcript accumulation"
     )
     
-    # Web Search Provider Configuration
+    # Web Search & Multi-PDF Research Configuration
     SEARCH_PROVIDER: str = Field(
         default=os.getenv("SEARCH_PROVIDER", "duckduckgo"),
         description="Web search provider: duckduckgo, tavily, serpapi, or mock"
@@ -247,6 +247,30 @@ class Settings(BaseSettings):
     SEARCH_API_KEY: str = Field(
         default=os.getenv("SEARCH_API_KEY", ""),
         description="API key for external search provider if configured"
+    )
+    MAX_RESEARCH_PDFS: int = Field(
+        default=int(os.getenv("MAX_RESEARCH_PDFS", "4")),
+        description="Maximum number of research PDFs to download and extract per research request"
+    )
+    MAX_CONCURRENT_PDF_DOWNLOADS: int = Field(
+        default=int(os.getenv("MAX_CONCURRENT_PDF_DOWNLOADS", "2")),
+        description="Maximum concurrent PDF downloads per research request"
+    )
+    MAX_PDF_SIZE_BYTES: int = Field(
+        default=int(os.getenv("MAX_PDF_SIZE_BYTES", str(20 * 1024 * 1024))),
+        description="Maximum allowed size per individual research PDF in bytes (default: 20 MB)"
+    )
+    PDF_DOWNLOAD_TIMEOUT_SECONDS: float = Field(
+        default=float(os.getenv("PDF_DOWNLOAD_TIMEOUT_SECONDS", "25.0")),
+        description="Timeout in seconds for downloading research PDFs"
+    )
+    MAX_TOTAL_RESEARCH_BYTES: int = Field(
+        default=int(os.getenv("MAX_TOTAL_RESEARCH_BYTES", str(60 * 1024 * 1024))),
+        description="Maximum total bytes allowed across all research downloads per request (default: 60 MB)"
+    )
+    MAX_PDF_PAGES_TO_EXTRACT: int = Field(
+        default=int(os.getenv("MAX_PDF_PAGES_TO_EXTRACT", "30")),
+        description="Maximum number of pages to extract per research PDF"
     )
     
     # CORS

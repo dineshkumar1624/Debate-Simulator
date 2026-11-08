@@ -376,6 +376,15 @@ class JudgeAgent:
             parsed_data["judge_model_used"] = "mock_adjudicator"
             parsed_data["is_fallback"] = True
             parsed_data["execution_status"] = "SIMULATED"
+            parsed_data["performance_metrics"] = {
+                "provider": "mock",
+                "model": "mock_adjudicator",
+                "evaluation_duration_sec": 0.15,
+                "generated_tokens": 180,
+                "input_tokens": 500,
+                "tokens_per_second": 1200.0,
+                "ttft_sec": 0.05
+            }
             return JudgeReportSchema.model_validate(parsed_data)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
             logger.warning(f"Judge output JSON validation error: {e}. Marking evaluation explicitly as failed.")

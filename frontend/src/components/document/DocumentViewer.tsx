@@ -188,10 +188,10 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
 
   return (
     <div
-      className={`rounded-3xl border border-slate-200/90 dark:border-white/10 bg-white dark:bg-[#070b18]/95 backdrop-blur-2xl shadow-xl flex flex-col overflow-hidden transition-all ${className}`}
+      className={`rounded-3xl border border-slate-200/90 dark:border-white/10 bg-white dark:bg-[#070a10]/95 backdrop-blur-2xl shadow-xl flex flex-col overflow-hidden transition-all ${className}`}
     >
       {/* 1. TOP HEADER & METADATA */}
-      <div className="p-4 border-b border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-[#0b1022] flex items-center justify-between gap-3 flex-wrap">
+      <div className="p-4 border-b border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-[#0b0f19] flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3 min-w-0">
           <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
             isImageDoc
@@ -284,7 +284,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
       </div>
 
       {/* 2. MODE SWITCHER TABS */}
-      <div className="px-4 py-2 border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-[#090e1f] flex items-center justify-between gap-3 flex-wrap">
+      <div className="px-4 py-2 border-b border-slate-200 dark:border-white/10 bg-slate-100/70 dark:bg-[#080c14] flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -450,7 +450,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
       )}
 
       {/* 5. MAIN CONTENT VIEWER SURFACE */}
-      <div className="relative flex-1 min-h-[460px] max-h-[580px] overflow-auto bg-slate-900/40 p-4">
+      <div className="relative flex-1 min-h-[460px] max-h-[580px] overflow-auto bg-slate-100/50 dark:bg-[#05070d] p-4">
         {/* MODE A: ORIGINAL PDF PAGE / ORIGINAL IMAGE VIEWER */}
         {viewMode === 'pdf-render' && (
           <div
@@ -824,7 +824,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
       </div>
 
       {/* 6. VIEWER FOOTER */}
-      <div className="p-3 border-t border-slate-200/60 dark:border-white/10 bg-slate-50/70 dark:bg-[#0b1022] flex items-center justify-between text-[10px] font-mono text-slate-400 flex-wrap gap-2">
+      <div className="p-3 border-t border-slate-200/60 dark:border-white/10 bg-slate-50/70 dark:bg-[#0b0f19] flex items-center justify-between text-[10px] font-mono text-slate-400 flex-wrap gap-2">
         <div className="flex items-center gap-1.5 text-slate-400">
           <span className={`w-1.5 h-1.5 rounded-full ${isImageDoc ? 'bg-emerald-400' : 'bg-emerald-400'}`} />
           <span>

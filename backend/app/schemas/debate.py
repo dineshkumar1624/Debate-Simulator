@@ -109,6 +109,7 @@ class DebateSessionSchema(BaseModel):
     evidenceMode: Optional[bool] = None
     completedAt: Optional[str] = None
     researchSources: Optional[List[Dict[str, Any]]] = None
+    performanceMetrics: Optional[Dict[str, Any]] = None
 
 class StartDebateRequest(BaseModel):
     topic: str = Field(..., min_length=1, description="Debate proposition")
@@ -121,6 +122,7 @@ class StartDebateRequest(BaseModel):
     strictFactChecking: Optional[bool] = True
     documentId: Optional[str] = None
     sourceScope: Optional[str] = "document"
+    researchTimings: Optional[Dict[str, Any]] = None
 
     @field_validator("rounds")
     @classmethod
