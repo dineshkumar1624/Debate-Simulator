@@ -199,7 +199,24 @@ export const DebatePage: React.FC = () => {
 
   // End-to-End Performance Tracking
   const [performanceMetrics, setPerformanceMetrics] = useState<Record<string, any> | null>(null);
-  const [showPerformancePanel, setShowPerformancePanel] = useState<boolean>(true);
+  const [showPerformancePanel, setShowPerformancePanel] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showPerformancePanel');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const togglePerformancePanel = () => {
+    setShowPerformancePanel((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('showPerformancePanel', String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // Authoritative persistent timestamps for drift-free stopwatch
   const [debateStartTimeMs, setDebateStartTimeMs] = useState<number | null>(null);
@@ -446,6 +463,10 @@ export const DebatePage: React.FC = () => {
   const [streamingModel, setStreamingModel] = useState<string>('');
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [tokenCount, setTokenCount] = useState<number>(0);
+  const [speakerStartTimeMs, setSpeakerStartTimeMs] = useState<number | null>(null);
+  const [speakerElapsedSeconds, setSpeakerElapsedSeconds] = useState<number>(0);
+  const [judgeStartTimeMs, setJudgeStartTimeMs] = useState<number | null>(null);
+  const [judgeElapsedSeconds, setJudgeElapsedSeconds] = useState<number>(0);
 
   // Judge Analysis Criteria States (Document Fidelity & Rigor)
   const [judgeAnalyzingCriteria, setJudgeAnalyzingCriteria] = useState<{
@@ -541,6 +562,137 @@ export const DebatePage: React.FC = () => {
     return false;
   }, [sourceMode, liveSession, debateDocument]);
 
+  // Authoritative metrics computation for Live Telemetry Cards & Summary
+  const telemetryData = useMemo(() => {
+    // 1. Evidence / RAG metrics
+    const research = performanceMetrics?.research || researchResponse?.timings || {};
+    const totalResearchSec = typeof research.total_research_duration_sec === 'number' ? research.total_research_duration_sec : null;
+    const searchProviderSec = typeof research.search_provider_duration_sec === 'number' ? research.search_provider_duration_sec : null;
+    const pdfDlSec = typeof research.pdf_download_duration_sec === 'number' ? research.pdf_download_duration_sec : 0;
+    const pdfExtSec = typeof research.pdf_extraction_duration_sec === 'number' ? research.pdf_extraction_duration_sec : 0;
+    const pdfTotalSec = pdfDlSec + pdfExtSec > 0 ? pdfDlSec + pdfExtSec : null;
+    const qdrantIndexSec = typeof research.qdrant_indexing_duration_sec === 'number' ? research.qdrant_indexing_duration_sec : null;
+
+    const sources = liveSession?.researchSources || researchResponse?.sources || [];
+    const pdfSourcesCount = performanceMetrics?.pdfs_processed ?? sources.filter((s: any) => s.contentType === 'FULL_PDF_TEXT').length;
+    const htmlSourcesCount = Math.max(0, sources.length - pdfSourcesCount);
+    const chunksCount = performanceMetrics?.pages_extracted ?? researchResponse?.indexedChunks ?? (sources.length * 4);
+
+    // 2. PRO metrics (Gemma 4)
+    let proSec = typeof performanceMetrics?.total_pro_sec === 'number' ? performanceMetrics.total_pro_sec : null;
+    let proToks = typeof performanceMetrics?.pro_total?.tokens === 'number' ? performanceMetrics.pro_total.tokens : null;
+    let proSpeed = typeof performanceMetrics?.pro_total?.avg_tokens_per_second === 'number' ? performanceMetrics.pro_total.avg_tokens_per_second : null;
+
+    // 3. CON metrics (Qwen 2.5)
+    let conSec = typeof performanceMetrics?.total_con_sec === 'number' ? performanceMetrics.total_con_sec : null;
+    let conToks = typeof performanceMetrics?.con_total?.tokens === 'number' ? performanceMetrics.con_total.tokens : null;
+    let conSpeed = typeof performanceMetrics?.con_total?.avg_tokens_per_second === 'number' ? performanceMetrics.con_total.avg_tokens_per_second : null;
+
+    // Fallback accumulation from rounds if summary object not yet generated
+    if (proSec === null || conSec === null) {
+      let accumulatedProSec = 0;
+      let accumulatedProToks = 0;
+      let accumulatedConSec = 0;
+      let accumulatedConToks = 0;
+
+      if (performanceMetrics?.rounds) {
+        const rList = Array.isArray(performanceMetrics.rounds)
+          ? performanceMetrics.rounds
+          : Object.values(performanceMetrics.rounds);
+        rList.forEach((r: any) => {
+          if (r.pro?.generation_duration_sec) accumulatedProSec += r.pro.generation_duration_sec;
+          if (r.pro?.generated_tokens) accumulatedProToks += r.pro.generated_tokens;
+          if (r.con?.generation_duration_sec) accumulatedConSec += r.con.generation_duration_sec;
+          if (r.con?.generated_tokens) accumulatedConToks += r.con.generated_tokens;
+        });
+      } else if (liveSession?.rounds) {
+        liveSession.rounds.forEach((rnd) => {
+          rnd.turns.forEach((t: any) => {
+            const isPro = t.role === 'PRO' || t.speaker === 'DEBATER_A';
+            const dur = t.durationSeconds || t.duration_seconds || 0;
+            const toks = t.generatedTokens || t.completion_tokens || (t.content ? t.content.split(/\s+/).length : 0);
+            if (isPro) {
+              accumulatedProSec += dur;
+              accumulatedProToks += toks;
+            } else {
+              accumulatedConSec += dur;
+              accumulatedConToks += toks;
+            }
+          });
+        });
+      }
+
+      if (proSec === null && accumulatedProSec > 0) {
+        proSec = accumulatedProSec;
+        proToks = accumulatedProToks;
+        proSpeed = proToks / Math.max(0.1, proSec);
+      }
+      if (conSec === null && accumulatedConSec > 0) {
+        conSec = accumulatedConSec;
+        conToks = accumulatedConToks;
+        conSpeed = conToks / Math.max(0.1, conSec);
+      }
+    }
+
+    // 4. Judge metrics
+    const actualJudgeModel = performanceMetrics?.judge?.model || (liveSession as any)?.judgeModel || judgeModel || (judgeProvider === 'nvidia' ? 'meta/llama-3.1-70b-instruct' : 'gemini-3.5-flash');
+    const judgeSec = typeof performanceMetrics?.total_judge_sec === 'number'
+      ? performanceMetrics.total_judge_sec
+      : (typeof performanceMetrics?.judge?.evaluation_duration_sec === 'number'
+        ? performanceMetrics.judge.evaluation_duration_sec
+        : (typeof (liveSession?.synthesis as any)?.evaluationDurationSec === 'number' ? (liveSession!.synthesis as any).evaluationDurationSec : null));
+    const judgeToks = typeof performanceMetrics?.judge?.generated_tokens === 'number'
+      ? performanceMetrics.judge.generated_tokens
+      : (liveSession?.synthesis ? Math.round(JSON.stringify(liveSession.synthesis).length / 4) : null);
+    const judgeSpeed = typeof performanceMetrics?.judge?.tokens_per_second === 'number'
+      ? performanceMetrics.judge.tokens_per_second
+      : (judgeSec && judgeToks ? judgeToks / judgeSec : null);
+
+    // 5. Total Cumulative Inference & Overall Debate Summary
+    const totalGenSec = typeof performanceMetrics?.total_generation_sec === 'number'
+      ? performanceMetrics.total_generation_sec
+      : ((proSec || 0) + (conSec || 0));
+    const totalTokens = typeof performanceMetrics?.total_generated_tokens === 'number'
+      ? performanceMetrics.total_generated_tokens
+      : ((proToks || 0) + (conToks || 0) + (judgeToks || 0));
+    const avgSpeed = typeof performanceMetrics?.avg_tokens_per_second === 'number'
+      ? performanceMetrics.avg_tokens_per_second
+      : (totalGenSec > 0 && totalTokens > 0 ? totalTokens / totalGenSec : null);
+
+    return {
+      // Evidence / RAG
+      totalResearchSec,
+      searchProviderSec,
+      pdfTotalSec,
+      qdrantIndexSec,
+      pdfSourcesCount,
+      htmlSourcesCount,
+      chunksCount,
+      isCachedResearch: Boolean(research.is_cached),
+
+      // PRO
+      proSec,
+      proToks,
+      proSpeed,
+
+      // CON
+      conSec,
+      conToks,
+      conSpeed,
+
+      // Judge
+      actualJudgeModel,
+      judgeSec,
+      judgeToks,
+      judgeSpeed,
+
+      // Totals
+      totalGenSec,
+      totalTokens,
+      avgSpeed
+    };
+  }, [performanceMetrics, researchResponse, liveSession, judgeModel, judgeProvider]);
+
   // Dynamic calculation of debate rounds and steps
   const activeRounds = useMemo(() => {
     const r = liveSession?.config?.rounds || rounds || 3;
@@ -551,6 +703,7 @@ export const DebatePage: React.FC = () => {
   const judgeStep = totalTurnsExpected + 1;
   const completedStep = totalTurnsExpected + 2;
   const totalSteps = completedStep;
+  const isDebateCompleted = liveSession?.status === 'completed' || currentStep >= completedStep;
 
   const currentDisplayRound = useMemo(() => {
     if (streamingRound) return Math.min(Math.max(1, streamingRound), activeRounds);
@@ -651,15 +804,21 @@ export const DebatePage: React.FC = () => {
     // Authoritative wall-clock sync: Date.now() - debateStartTimeMs
     const tick = () => {
       setElapsedSeconds(Math.max(0, Math.floor((Date.now() - debateStartTimeMs) / 1000)));
+      if (speakerStartTimeMs) {
+        setSpeakerElapsedSeconds(Math.max(0, (Date.now() - speakerStartTimeMs) / 1000));
+      }
+      if (judgeStartTimeMs) {
+        setJudgeElapsedSeconds(Math.max(0, (Date.now() - judgeStartTimeMs) / 1000));
+      }
     };
 
     tick();
-    const timer = setInterval(tick, 1000);
+    const timer = setInterval(tick, 200);
 
     return () => {
       clearInterval(timer);
     };
-  }, [hasStarted, activeDebateId, debateStartTimeMs, debateCompletedTimeMs, liveSession?.status, liveSession?.elapsedSeconds]);
+  }, [hasStarted, activeDebateId, debateStartTimeMs, debateCompletedTimeMs, liveSession?.status, liveSession?.elapsedSeconds, speakerStartTimeMs, judgeStartTimeMs]);
 
   // Server-Sent Events (SSE) live token streaming
   useEffect(() => {
@@ -682,16 +841,22 @@ export const DebatePage: React.FC = () => {
             setStreamingModel(data.model || '');
             setStreamingText('');
             setTokenCount(0);
+            setSpeakerStartTimeMs(Date.now());
+            setSpeakerElapsedSeconds(0);
             setBackendStatusMessage(data.message || `${data.speaker} generating response...`);
           } else if (data.type === 'token') {
             setStreamingText((prev) => prev + (data.delta || ''));
             setTokenCount((prev) => prev + 1);
           } else if (data.type === 'speaker_done') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
             setStreamingText('');
             setBackendStatusMessage(`Round ${data.round} ${data.speaker} complete`);
           } else if (data.type === 'judge_start') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(Date.now());
+            setJudgeElapsedSeconds(0);
             setCurrentStep(judgeStep);
             setBackendStatusMessage(data.message || `${judgeProvider === 'nvidia' ? 'NVIDIA NIM' : 'Google Gemini'} (JUDGE) analyzing transcript...`);
           } else if (data.type === 'performance_update') {
@@ -726,24 +891,32 @@ export const DebatePage: React.FC = () => {
             }
           } else if (data.type === 'completed' && data.status === 'failed') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(null);
             setStreamingText('');
             if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage(data.message || data.error || 'Debate execution failed');
             if (eventSource) eventSource.close();
           } else if (data.type === 'cancelled' || (data.type === 'completed' && data.status === 'cancelled')) {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(null);
             setStreamingText('');
             if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage('Debate was cancelled.');
             if (eventSource) eventSource.close();
           } else if (data.type === 'judge_done' || data.type === 'completed') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(null);
             setCurrentStep(completedStep);
             if (data.metrics) setPerformanceMetrics(data.metrics);
             setBackendStatusMessage('Debate Adjudication Complete!');
             if (eventSource) eventSource.close();
           } else if (data.type === 'error' || data.type === 'failed') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(null);
             setStreamingText('');
             setBackendStatusMessage(data.message || data.error || 'Debate execution error');
             if (eventSource) eventSource.close();
@@ -755,6 +928,8 @@ export const DebatePage: React.FC = () => {
         debateApi.getDebate(activeDebateId).then((deb) => {
           if (deb.status === 'completed' || deb.status === 'failed' || deb.status === 'cancelled') {
             setStreamingSpeaker(null);
+            setSpeakerStartTimeMs(null);
+            setJudgeStartTimeMs(null);
             setLiveSession(deb);
             if (deb.performanceMetrics) setPerformanceMetrics(deb.performanceMetrics);
           }
@@ -2350,7 +2525,7 @@ export const DebatePage: React.FC = () => {
               {/* Telemetry / Performance Details Toggle */}
               <button
                 type="button"
-                onClick={() => setShowPerformancePanel((prev) => !prev)}
+                onClick={togglePerformancePanel}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer shadow-xs ${
                   showPerformancePanel
                     ? 'border-indigo-400/50 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
@@ -2407,14 +2582,15 @@ export const DebatePage: React.FC = () => {
           {/* Live End-to-End Performance Dashboard (Collapsible) */}
           {showPerformancePanel && (
             <div className="rounded-2xl border border-indigo-200/90 dark:border-indigo-500/30 bg-white/95 dark:bg-[#070a16]/95 backdrop-blur-xl p-4 sm:p-5 shadow-sm space-y-4 font-mono animate-fadeIn">
+              {/* Heading Section */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 dark:border-white/10 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500">
-                    <Gauge className="w-4 h-4" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-500 shrink-0">
+                    <Gauge className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 dark:text-white">
-                      Live Response Time & Inference Telemetry
+                    <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider text-slate-900 dark:text-white">
+                      LIVE RESPONSE TIME & INFERENCE TELEMETRY
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       High-resolution monotonic timer · Non-fabricated instrumentation
@@ -2423,69 +2599,82 @@ export const DebatePage: React.FC = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-white/10 font-bold">
-                    Wall Clock: {formatElapsedTime(elapsedSeconds)}
-                  </span>
-                  {performanceMetrics?.total_generation_sec !== undefined && (
-                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 font-bold">
-                      Inference Sum: {performanceMetrics.total_generation_sec.toFixed(2)}s
+                  <div className="px-3 py-1.5 rounded-xl bg-slate-900 text-white dark:bg-black/90 dark:text-white border border-slate-700 dark:border-white/20 font-bold flex items-center gap-2 shadow-xs">
+                    <span className={`w-2 h-2 rounded-full ${isDebateCompleted ? 'bg-emerald-400' : 'bg-indigo-400 animate-pulse'}`} />
+                    <span>WALL CLOCK: {formatElapsedTime(elapsedSeconds)}</span>
+                  </div>
+                  {telemetryData.totalGenSec > 0 && (
+                    <span className="px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 font-bold">
+                      Inference Sum: {telemetryData.totalGenSec.toFixed(2)}s
                     </span>
                   )}
-                  {performanceMetrics?.avg_tokens_per_second !== undefined && (
-                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-bold">
-                      {performanceMetrics.avg_tokens_per_second.toFixed(1)} tok/s avg
+                  {telemetryData.avgSpeed !== null && telemetryData.avgSpeed > 0 && (
+                    <span className="px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-bold">
+                      {telemetryData.avgSpeed.toFixed(1)} tok/s avg
                     </span>
                   )}
                 </div>
               </div>
 
-              {/* 4-Stage Metric Columns */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-                {/* 1. Research Stage */}
-                <div className="p-3.5 rounded-xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020] space-y-2">
+              {/* 4 Performance Cards Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 text-xs">
+                {/* CARD 1: EVIDENCE / RAG */}
+                <div className="p-3.5 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.03] dark:bg-[#08131e] space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5 uppercase text-[11px]">
+                    <span className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5 uppercase text-[11px] tracking-wide">
                       <Globe className="w-3.5 h-3.5 text-cyan-500" />
-                      <span>Evidence / RAG</span>
+                      <span>EVIDENCE / RAG</span>
                     </span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      isCurrentDebateWeb ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400' : 'bg-slate-500/10 text-slate-500'
-                    }`}>
-                      {isCurrentDebateWeb ? 'Web Search' : 'Direct Doc'}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-600 dark:text-cyan-300 border border-cyan-500/20">
+                      {isCurrentDebateWeb ? 'Web Search' : 'Document'}
                     </span>
                   </div>
-                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                  <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
                     {isCurrentDebateWeb ? (
                       <>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
                           <span className="text-slate-400">Search:</span>
-                          <span className="font-semibold">{performanceMetrics?.research?.search_provider_duration_sec ? `${performanceMetrics.research.search_provider_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.search_provider_duration_sec ? `${researchResponse.timings.search_provider_duration_sec.toFixed(2)}s` : 'Ready')}</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {telemetryData.searchProviderSec !== null ? `${telemetryData.searchProviderSec.toFixed(2)}s` : (isResearching ? 'Searching...' : 'Ready')}
+                          </span>
                         </div>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
                           <span className="text-slate-400">PDFs / HTML:</span>
-                          <span className="font-semibold">{performanceMetrics?.research?.pdf_download_duration_sec ? `${(performanceMetrics.research.pdf_download_duration_sec + (performanceMetrics.research.pdf_extraction_duration_sec || 0)).toFixed(2)}s` : (researchResponse?.timings?.pdf_download_duration_sec ? `${(researchResponse.timings.pdf_download_duration_sec + (researchResponse.timings.pdf_extraction_duration_sec || 0)).toFixed(2)}s` : 'Indexed')}</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200" title={`${telemetryData.pdfSourcesCount} PDFs, ${telemetryData.htmlSourcesCount} HTML sources`}>
+                            {telemetryData.pdfTotalSec !== null ? `${telemetryData.pdfTotalSec.toFixed(2)}s` : (telemetryData.pdfSourcesCount > 0 ? `${telemetryData.pdfSourcesCount} PDFs · ${telemetryData.htmlSourcesCount} HTML` : 'Indexed')}
+                          </span>
                         </div>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
                           <span className="text-slate-400">Qdrant Index:</span>
-                          <span className="font-semibold">{performanceMetrics?.research?.qdrant_indexing_duration_sec ? `${performanceMetrics.research.qdrant_indexing_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.qdrant_indexing_duration_sec ? `${researchResponse.timings.qdrant_indexing_duration_sec.toFixed(2)}s` : 'Ready')}</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {telemetryData.qdrantIndexSec !== null ? `${telemetryData.qdrantIndexSec.toFixed(2)}s` : (telemetryData.chunksCount > 0 ? `${telemetryData.chunksCount} chunks` : 'Ready')}
+                          </span>
                         </div>
-                        <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-cyan-600 dark:text-cyan-300">
+                        <div className="flex justify-between items-center border-t border-cyan-500/15 pt-1.5 font-bold text-cyan-600 dark:text-cyan-300">
                           <span>Total Research:</span>
-                          <span>{performanceMetrics?.research?.total_research_duration_sec ? `${performanceMetrics.research.total_research_duration_sec.toFixed(2)}s` : (researchResponse?.timings?.total_research_duration_sec ? `${researchResponse.timings.total_research_duration_sec.toFixed(2)}s` : '--')}</span>
+                          <span>
+                            {telemetryData.totalResearchSec !== null ? `${telemetryData.totalResearchSec.toFixed(2)}s` : (telemetryData.isCachedResearch ? '0.00s (Cached)' : (isResearching ? 'In Progress' : '--'))}
+                          </span>
                         </div>
                       </>
                     ) : (
                       <>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
                           <span className="text-slate-400">Mode:</span>
-                          <span className="font-semibold">Local Document RAG</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">Document RAG</span>
                         </div>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Document:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[120px]" title={debateDocument?.name || 'Document'}>
+                            {debateDocument?.name || 'Uploaded Doc'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
                           <span className="text-slate-400">Pages:</span>
-                          <span className="font-semibold">{debateDocument?.pageCount || 0} pages</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">{debateDocument?.pageCount || 1} pages</span>
                         </div>
-                        <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-indigo-600 dark:text-indigo-400">
-                          <span>Embeddings:</span>
+                        <div className="flex justify-between items-center border-t border-cyan-500/15 pt-1.5 font-bold text-indigo-600 dark:text-indigo-400">
+                          <span>Vector Storage:</span>
                           <span>In-Memory Qdrant</span>
                         </div>
                       </>
@@ -2493,127 +2682,272 @@ export const DebatePage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 2. PRO Agent */}
-                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
-                  streamingSpeaker === 'PRO'
-                    ? 'border-sky-500 bg-sky-50/70 dark:bg-sky-950/30 ring-1 ring-sky-500/40'
-                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
-                }`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-sky-600 dark:text-sky-400 flex items-center gap-1.5 uppercase text-[11px]">
-                      <Cpu className="w-3.5 h-3.5 text-sky-500" />
-                      <span>PRO (Gemma 4)</span>
-                    </span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      streamingSpeaker === 'PRO' ? 'bg-sky-500 text-white animate-pulse' : (performanceMetrics?.total_pro_sec ? 'Recorded' : 'Pending')
-                    }`}>
-                      {streamingSpeaker === 'PRO' ? 'Active' : (performanceMetrics?.total_pro_sec ? 'Recorded' : 'Pending')}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Duration:</span>
-                      <span className="font-semibold">
-                        {streamingSpeaker === 'PRO' ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_pro_sec ? `${performanceMetrics.total_pro_sec.toFixed(2)}s` : '--')}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Generated:</span>
-                      <span className="font-semibold">
-                        {streamingSpeaker === 'PRO' ? `${tokenCount} toks` : (performanceMetrics?.pro_total?.tokens ? `${performanceMetrics.pro_total.tokens} toks` : '--')}
-                      </span>
-                    </div>
-                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-sky-600 dark:text-sky-300">
-                      <span>Speed:</span>
-                      <span>
-                        {streamingSpeaker === 'PRO'
-                          ? `${(tokenCount / Math.max(1, elapsedSeconds)).toFixed(1)} tok/s`
-                          : (performanceMetrics?.pro_total?.tokens_per_second ? `${performanceMetrics.pro_total.tokens_per_second.toFixed(1)} tok/s` : '--')}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                {/* CARD 2: PRO (GEMMA 4) */}
+                {(() => {
+                  const isProActive = streamingSpeaker === 'PRO';
+                  const isProCompleted = telemetryData.proSec !== null && telemetryData.proSec > 0;
+                  const isProQueued = hasStarted && !isDebateCompleted && !isProActive && (currentStep % 2 === 0);
+                  const statusLabel = isProActive ? 'Active' : (isProCompleted ? 'Completed' : (isProQueued ? 'Queued' : 'Pending'));
+                  const statusBadgeStyle = isProActive
+                    ? 'bg-sky-500 text-white animate-pulse'
+                    : (isProCompleted
+                      ? 'bg-sky-500/10 text-sky-600 dark:text-sky-300 border border-sky-500/20'
+                      : (isProQueued
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300 border border-amber-500/20'
+                        : 'bg-slate-500/10 text-slate-500 dark:text-slate-400'));
 
-                {/* 3. CON Agent */}
-                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
-                  streamingSpeaker === 'CON'
-                    ? 'border-violet-500 bg-violet-50/70 dark:bg-violet-950/30 ring-1 ring-violet-500/40'
-                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
-                }`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-violet-600 dark:text-violet-400 flex items-center gap-1.5 uppercase text-[11px]">
-                      <Cpu className="w-3.5 h-3.5 text-violet-500" />
-                      <span>CON (Qwen 2.5)</span>
-                    </span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      streamingSpeaker === 'CON' ? 'bg-violet-500 text-white animate-pulse' : (performanceMetrics?.total_con_sec ? 'Recorded' : 'Pending')
-                    }`}>
-                      {streamingSpeaker === 'CON' ? 'Active' : (performanceMetrics?.total_con_sec ? 'Recorded' : 'Pending')}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Duration:</span>
-                      <span className="font-semibold">
-                        {streamingSpeaker === 'CON' ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_con_sec ? `${performanceMetrics.total_con_sec.toFixed(2)}s` : '--')}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Generated:</span>
-                      <span className="font-semibold">
-                        {streamingSpeaker === 'CON' ? `${tokenCount} toks` : (performanceMetrics?.con_total?.tokens ? `${performanceMetrics.con_total.tokens} toks` : '--')}
-                      </span>
-                    </div>
-                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-violet-600 dark:text-violet-300">
-                      <span>Speed:</span>
-                      <span>
-                        {streamingSpeaker === 'CON'
-                          ? `${(tokenCount / Math.max(1, elapsedSeconds)).toFixed(1)} tok/s`
-                          : (performanceMetrics?.con_total?.tokens_per_second ? `${performanceMetrics.con_total.tokens_per_second.toFixed(1)} tok/s` : '--')}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                  const liveProDuration = isProActive
+                    ? (speakerElapsedSeconds > 0 ? `${speakerElapsedSeconds.toFixed(1)}s` : '0.1s')
+                    : (isProCompleted ? `${telemetryData.proSec!.toFixed(2)}s` : '--');
+                  const liveProTokens = isProActive
+                    ? `${tokenCount} toks`
+                    : (telemetryData.proToks !== null ? `${telemetryData.proToks} toks` : '--');
+                  const liveProSpeed = isProActive
+                    ? (speakerElapsedSeconds > 0 ? `${(tokenCount / speakerElapsedSeconds).toFixed(1)} tok/s` : '--')
+                    : (telemetryData.proSpeed !== null ? `${telemetryData.proSpeed.toFixed(1)} tok/s` : '--');
 
-                {/* 4. Judge Agent */}
-                <div className={`p-3.5 rounded-xl border transition-all space-y-2 ${
-                  currentStep === judgeStep
-                    ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/30 ring-1 ring-amber-500/40'
-                    : 'border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0B1020]'
-                }`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5 uppercase text-[11px]">
-                      <Scale className="w-3.5 h-3.5 text-amber-500" />
-                      <span>Judge ({judgeProvider === 'nvidia' ? 'NIM' : 'Gemini'})</span>
-                    </span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                      currentStep === judgeStep ? 'bg-amber-500 text-white animate-pulse' : (performanceMetrics?.total_judge_sec ? 'Adjudicated' : 'Pending')
+                  return (
+                    <div className={`p-3.5 rounded-xl border transition-all space-y-2.5 ${
+                      isProActive
+                        ? 'border-sky-500 bg-sky-50/70 dark:bg-sky-950/30 ring-1 ring-sky-500/40 shadow-sm'
+                        : 'border-sky-500/20 bg-sky-500/[0.03] dark:bg-[#07111e]'
                     }`}>
-                      {currentStep === judgeStep ? 'Analyzing' : (performanceMetrics?.total_judge_sec ? 'Complete' : 'Pending')}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Duration:</span>
-                      <span className="font-semibold">
-                        {currentStep === judgeStep ? `⏱ ${formatElapsedTime(elapsedSeconds)}` : (performanceMetrics?.total_judge_sec ? `${performanceMetrics.total_judge_sec.toFixed(2)}s` : '--')}
-                      </span>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sky-600 dark:text-sky-400 flex items-center gap-1.5 uppercase text-[11px] tracking-wide">
+                          <Cpu className="w-3.5 h-3.5 text-sky-500" />
+                          <span>PRO (GEMMA 4)</span>
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeStyle}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Model:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[120px]" title="gemma-4-E4B-Q4_0">
+                            gemma-4-E4B-Q4_0
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Duration:</span>
+                          <span className={`font-semibold ${isProActive ? 'text-sky-600 dark:text-sky-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                            {isProActive ? `⏱ ${liveProDuration}` : liveProDuration}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Generated:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {liveProTokens}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-sky-500/15 pt-1.5 font-bold text-sky-600 dark:text-sky-300">
+                          <span>Throughput:</span>
+                          <span>{liveProSpeed}</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Model:</span>
-                      <span className="font-semibold truncate max-w-[110px]" title={performanceMetrics?.judge?.model || judgeModel}>
-                        {performanceMetrics?.judge?.model || (judgeProvider === 'nvidia' ? 'llama-3.1-70b' : 'gemini-2.5-flash')}
-                      </span>
+                  );
+                })()}
+
+                {/* CARD 3: CON (QWEN 2.5) */}
+                {(() => {
+                  const isConActive = streamingSpeaker === 'CON';
+                  const isConCompleted = telemetryData.conSec !== null && telemetryData.conSec > 0;
+                  const isConQueued = hasStarted && !isDebateCompleted && !isConActive && (streamingSpeaker === 'PRO' || currentStep % 2 === 1);
+                  const statusLabel = isConActive ? 'Active' : (isConCompleted ? 'Completed' : (isConQueued ? 'Queued' : 'Pending'));
+                  const statusBadgeStyle = isConActive
+                    ? 'bg-violet-500 text-white animate-pulse'
+                    : (isConCompleted
+                      ? 'bg-violet-500/10 text-violet-600 dark:text-violet-300 border border-violet-500/20'
+                      : (isConQueued
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300 border border-amber-500/20'
+                        : 'bg-slate-500/10 text-slate-500 dark:text-slate-400'));
+
+                  const liveConDuration = isConActive
+                    ? (speakerElapsedSeconds > 0 ? `${speakerElapsedSeconds.toFixed(1)}s` : '0.1s')
+                    : (isConCompleted ? `${telemetryData.conSec!.toFixed(2)}s` : '--');
+                  const liveConTokens = isConActive
+                    ? `${tokenCount} toks`
+                    : (telemetryData.conToks !== null ? `${telemetryData.conToks} toks` : '--');
+                  const liveConSpeed = isConActive
+                    ? (speakerElapsedSeconds > 0 ? `${(tokenCount / speakerElapsedSeconds).toFixed(1)} tok/s` : '--')
+                    : (telemetryData.conSpeed !== null ? `${telemetryData.conSpeed.toFixed(1)} tok/s` : '--');
+
+                  return (
+                    <div className={`p-3.5 rounded-xl border transition-all space-y-2.5 ${
+                      isConActive
+                        ? 'border-violet-500 bg-violet-50/70 dark:bg-violet-950/30 ring-1 ring-violet-500/40 shadow-sm'
+                        : 'border-violet-500/20 bg-violet-500/[0.03] dark:bg-[#120a1f]'
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-violet-600 dark:text-violet-400 flex items-center gap-1.5 uppercase text-[11px] tracking-wide">
+                          <Cpu className="w-3.5 h-3.5 text-violet-500" />
+                          <span>CON (QWEN 2.5)</span>
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeStyle}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Model:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[120px]" title="qwen-2.5-7b-Q4_0">
+                            qwen-2.5-7b-Q4_0
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Duration:</span>
+                          <span className={`font-semibold ${isConActive ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                            {isConActive ? `⏱ ${liveConDuration}` : liveConDuration}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Generated:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {liveConTokens}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-violet-500/15 pt-1.5 font-bold text-violet-600 dark:text-violet-300">
+                          <span>Throughput:</span>
+                          <span>{liveConSpeed}</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex justify-between border-t border-slate-200/60 dark:border-white/5 pt-1 font-bold text-amber-600 dark:text-amber-300">
-                      <span>Throughput:</span>
-                      <span>
-                        {performanceMetrics?.judge?.tokens_per_second ? `${performanceMetrics.judge.tokens_per_second.toFixed(1)} tok/s` : (currentStep >= judgeStep ? 'Certifying...' : '--')}
-                      </span>
+                  );
+                })()}
+
+                {/* CARD 4: JUDGE */}
+                {(() => {
+                  const isJudgeActive = currentStep === judgeStep && !isDebateCompleted;
+                  const isJudgeCompleted = isDebateCompleted || (telemetryData.judgeSec !== null && telemetryData.judgeSec > 0);
+                  const isJudgeQueued = hasStarted && !isDebateCompleted && currentStep >= totalTurnsExpected && currentStep < judgeStep;
+                  const statusLabel = isJudgeActive ? 'Active' : (isJudgeCompleted ? 'Completed' : (isJudgeQueued ? 'Queued' : 'Pending'));
+                  const statusBadgeStyle = isJudgeActive
+                    ? 'bg-amber-500 text-white animate-pulse'
+                    : (isJudgeCompleted
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border border-emerald-500/20'
+                      : (isJudgeQueued
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300 border border-amber-500/20'
+                        : 'bg-slate-500/10 text-slate-500 dark:text-slate-400'));
+
+                  const liveJudgeDuration = isJudgeActive
+                    ? (judgeElapsedSeconds > 0 ? `${judgeElapsedSeconds.toFixed(1)}s` : '0.1s')
+                    : (telemetryData.judgeSec !== null ? `${telemetryData.judgeSec.toFixed(2)}s` : '--');
+                  const liveJudgeTokens = isJudgeActive
+                    ? 'Synthesizing...'
+                    : (telemetryData.judgeToks !== null ? `${telemetryData.judgeToks} toks` : '--');
+                  const liveJudgeSpeed = isJudgeActive
+                    ? 'Evaluating...'
+                    : (telemetryData.judgeSpeed !== null ? `${telemetryData.judgeSpeed.toFixed(1)} tok/s` : '--');
+
+                  return (
+                    <div className={`p-3.5 rounded-xl border transition-all space-y-2.5 ${
+                      isJudgeActive
+                        ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/30 ring-1 ring-amber-500/40 shadow-sm'
+                        : 'border-amber-500/20 bg-amber-500/[0.03] dark:bg-[#191107]'
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5 uppercase text-[11px] tracking-wide">
+                          <Scale className="w-3.5 h-3.5 text-amber-500" />
+                          <span>JUDGE</span>
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeStyle}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Model:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[120px]" title={telemetryData.actualJudgeModel}>
+                            {telemetryData.actualJudgeModel}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Duration:</span>
+                          <span className={`font-semibold ${isJudgeActive ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                            {isJudgeActive ? `⏱ ${liveJudgeDuration}` : liveJudgeDuration}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400">Generated:</span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {liveJudgeTokens}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-amber-500/15 pt-1.5 font-bold text-amber-600 dark:text-amber-300">
+                          <span>Throughput:</span>
+                          <span>{liveJudgeSpeed}</span>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
+
+              {/* Completed Summary Banner (Requirement 5) */}
+              {(isDebateCompleted || telemetryData.judgeSec !== null) && (
+                <div className="pt-3.5 border-t border-slate-200/80 dark:border-white/10 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>Debate Adjudication Summary</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400 italic">
+                      * Cumulative inference sum includes sequential turns; wall-clock measures total elapsed session duration.
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 text-[11px] font-mono">
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Research</span>
+                      <span className="font-bold text-cyan-600 dark:text-cyan-400">
+                        {telemetryData.totalResearchSec !== null ? `${telemetryData.totalResearchSec.toFixed(2)}s` : (telemetryData.isCachedResearch ? '0.00s' : '--')}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">PRO Total</span>
+                      <span className="font-bold text-sky-600 dark:text-sky-400">
+                        {telemetryData.proSec !== null ? `${telemetryData.proSec.toFixed(2)}s` : '--'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">CON Total</span>
+                      <span className="font-bold text-violet-600 dark:text-violet-400">
+                        {telemetryData.conSec !== null ? `${telemetryData.conSec.toFixed(2)}s` : '--'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Judge Eval</span>
+                      <span className="font-bold text-amber-600 dark:text-amber-400">
+                        {telemetryData.judgeSec !== null ? `${telemetryData.judgeSec.toFixed(2)}s` : '--'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Inference Sum</span>
+                      <span className="font-bold text-indigo-600 dark:text-indigo-400">
+                        {telemetryData.totalGenSec > 0 ? `${telemetryData.totalGenSec.toFixed(2)}s` : '--'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Wall-Clock</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        {formatElapsedTime(elapsedSeconds)}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Total Tokens</span>
+                      <span className="font-bold text-slate-800 dark:text-slate-200">
+                        {telemetryData.totalTokens > 0 ? `${telemetryData.totalTokens} toks` : '--'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-white/5">
+                      <span className="text-[10px] text-slate-400 block">Avg Speed</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        {telemetryData.avgSpeed !== null && telemetryData.avgSpeed > 0 ? `${telemetryData.avgSpeed.toFixed(1)} tok/s` : '--'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

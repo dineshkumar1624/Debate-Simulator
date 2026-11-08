@@ -260,3 +260,4 @@ def test_rag_two_stage_role_divergence_and_freshness():
         round2_ids = [e.get("id") for e in round2_ev]
         # Fresh chunks like c4 should be prioritized over already used c1/c3
         assert "c4" in round2_ids, "Fresh chunk c4 (Results) should be prioritized in Round 2"
+
