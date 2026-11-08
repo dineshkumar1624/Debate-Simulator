@@ -42,3 +42,4 @@ class DebateGraphState(TypedDict):
     winner: Optional[str]
     metrics: Optional[Dict[str, Any]]
     research_timings: Optional[Dict[str, Any]]
+    used_evidence_ids: Optional[List[str]]

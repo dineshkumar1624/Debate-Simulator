@@ -41,14 +41,53 @@ class DocumentProcessingService:
         return text.strip()
 
     # 2. Shared Chunking
+    def detect_section_headings(self, text: str) -> List[str]:
+        """
+        Detects academic and scholarly section headings (Abstract, Introduction, Methodology,
+        Results, Discussion, Limitations, Conclusion, References) from page text.
+        """
+        if not text:
+            return []
+
+        heading_patterns = [
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(abstract|executive\s+summary)\b", "Abstract"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(introduction|background|problem\s+statement|motivation)\b", "Introduction"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(related\s+work|literature\s+review|prior\s+work)\b", "Related Work"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(methodology|methods|materials\s+and\s+methods|system\s+design|architecture|implementation|approach)\b", "Methodology"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(experiments|experimental\s+results|evaluation|empirical\s+results|empirical\s+evaluation|results|findings)\b", "Results & Evaluation"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(discussion|comparative\s+analysis|implications|interpretations)\b", "Discussion"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(limitations|threats\s+to\s+validity|risks|challenges|failure\s+modes|ethical\s+considerations|trade-offs)\b", "Limitations & Risks"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(conclusion|conclusions|concluding\s+remarks|summary\s+and\s+future\s+work|future\s+work)\b", "Conclusion"),
+            (r"(?im)^(?:\d+\.|\d+\.\d+|[IVXLCDM]+\.|\b)?\s*(references|bibliography)\b", "References"),
+        ]
+
+        found = []
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        for line in lines:
+            # Check lines that look like headings (typically <= 80 characters)
+            if len(line) <= 80:
+                for pat, label in heading_patterns:
+                    if re.search(pat, line) and label not in found:
+                        found.append(label)
+
+        # Fallback: if no line-start heading found, check for strong section presence in first 400 chars
+        if not found:
+            prefix = text[:400]
+            for pat, label in heading_patterns:
+                if re.search(pat, prefix) and label not in found:
+                    found.append(label)
+
+        return found
+
     def chunk_text(
         self,
         text: str,
-        page_number: int = 1,
+        page_number: Optional[int] = 1,
         section_title: str = "General"
     ) -> List[Dict[str, Any]]:
         """
         Splits text into overlapping bounded chunks while preserving page & section references.
+        Allows page_number to be None for non-paginated web articles and search snippets.
         """
         normalized = self.normalize_text(text)
         if not normalized:
@@ -87,7 +126,7 @@ class DocumentProcessingService:
         """
         Extracts text from PDF page by page.
         Supports multi-page documents, detects scanned, vector-outlined, or rasterized pages,
-        and applies high-performance RapidOCR / pypdfium2 extraction where text is sparse.
+        detects scholarly section headings, and applies high-performance RapidOCR / pypdfium2 extraction where text is sparse.
         """
         pages_content = []
         try:
@@ -108,9 +147,11 @@ class DocumentProcessingService:
             total_native_chars = sum(len(t) for t in native_texts)
             logger.info(f"[Stage C] Native PDF extraction yielded {total_native_chars} chars across {num_pages} pages")
 
+            active_section = "Overview"
             for idx in range(num_pages):
                 page_num = idx + 1
                 text = native_texts[idx]
+                ocr_applied = False
 
                 # Scanned, vector-outlined, or image-dominated page detection (< 40 characters)
                 if len(text) < 40:
@@ -118,10 +159,23 @@ class DocumentProcessingService:
                     ocr_text = self._ocr_pdf_page(file_path, idx)
                     if ocr_text:
                         text = (text + "\n" + ocr_text).strip() if text else ocr_text
+                        ocr_applied = True
+
+                # Section heading detection per page
+                headings = self.detect_section_headings(text)
+                if headings:
+                    active_section = headings[0]
+                    section_title = f"{active_section} (Page {page_num})"
+                else:
+                    section_title = f"{active_section} (Page {page_num})" if active_section != "Overview" else f"Page {page_num}"
 
                 pages_content.append({
                     "page_number": page_num,
-                    "section_title": f"Page {page_num}",
+                    "section_title": section_title,
+                    "headings": headings,
+                    "char_count": len(text),
+                    "has_usable_text": len(text.strip()) >= 20,
+                    "ocr_applied": ocr_applied,
                     "text": text
                 })
         except Exception as e:

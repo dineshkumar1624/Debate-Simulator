@@ -548,12 +548,18 @@ class ResearchService:
             # Check if this content_hash is already cached
             cached_by_hash = research_cache.get_pdf(url, content_hash=content_hash)
             if cached_by_hash:
+                effective_max_pages = max_pages or getattr(settings, "MAX_PDF_PAGES_TO_EXTRACT", 30)
+                is_partial = len(cached_by_hash) > effective_max_pages
                 src["content_type"] = "FULL_PDF_TEXT"
                 src["page_count"] = len(cached_by_hash)
-                src["pages_extracted"] = len(cached_by_hash)
-                src["pdf_pages"] = cached_by_hash
-                src["content"] = "\n\n".join(f"[Page {p['page_number']}]\n{p['text']}" for p in cached_by_hash)
-                src["is_full_article"] = True
+                src["pages_extracted"] = min(len(cached_by_hash), effective_max_pages)
+                src["is_partial_extraction"] = is_partial
+                src["extraction_status"] = "PARTIAL" if is_partial else "FULL"
+                src["skipped_pages_count"] = max(0, len(cached_by_hash) - effective_max_pages)
+                src["skipped_reason"] = f"Cached PDF exceeds {effective_max_pages} pages limit." if is_partial else None
+                src["pdf_pages"] = cached_by_hash[:effective_max_pages]
+                src["content"] = "\n\n".join(f"[{p.get('section_title') or ('Page ' + str(p.get('page_number')))}]\n{p['text']}" for p in src["pdf_pages"])
+                src["is_full_article"] = not is_partial
                 src["extraction_duration_sec"] = 0.0
                 return src
 
@@ -573,7 +579,15 @@ class ResearchService:
                 raise ValueError("PDF document contains no readable text or extractable OCR pages.")
 
             effective_max_pages = max_pages or getattr(settings, "MAX_PDF_PAGES_TO_EXTRACT", 30)
+            is_partial = len(raw_pages) > effective_max_pages
             pages_content = raw_pages[:effective_max_pages]
+            skipped_pages = len(raw_pages) - len(pages_content) if is_partial else 0
+            skipped_reason = (
+                f"PDF exceeds limit of {effective_max_pages} pages ({len(raw_pages)} total pages). Processed first {effective_max_pages} pages."
+                if is_partial else None
+            )
+            if is_partial:
+                logger.warning(f"[PDF Extraction Partial] {url}: {len(pages_content)} of {len(raw_pages)} pages processed ({skipped_pages} skipped).")
 
             for p in pages_content:
                 if emit_callback:
@@ -581,18 +595,22 @@ class ResearchService:
                         "pdf_page_extracted",
                         "in_progress",
                         f"Extracted Page {p['page_number']} of {len(raw_pages)} for {src['title'][:35]}",
-                        {"url": url, "page": p["page_number"], "total_pages": len(raw_pages)}
+                        {"url": url, "page": p["page_number"], "total_pages": len(raw_pages), "section": p.get("section_title")}
                     )
 
             total_chars = sum(len(p.get("text", "")) for p in pages_content)
-            logger.info(f"PDF extraction succeeded for {url}: {len(pages_content)} pages, {total_chars} chars")
+            logger.info(f"PDF extraction succeeded for {url}: {len(pages_content)}/{len(raw_pages)} pages, {total_chars} chars (status: {'PARTIAL' if is_partial else 'FULL'})")
 
             src["content_type"] = "FULL_PDF_TEXT"
             src["page_count"] = len(raw_pages)
             src["pages_extracted"] = len(pages_content)
+            src["is_partial_extraction"] = is_partial
+            src["extraction_status"] = "PARTIAL" if is_partial else "FULL"
+            src["skipped_pages_count"] = skipped_pages
+            src["skipped_reason"] = skipped_reason
             src["pdf_pages"] = pages_content
-            src["content"] = "\n\n".join(f"[Page {p['page_number']}]\n{p['text']}" for p in pages_content)
-            src["is_full_article"] = True
+            src["content"] = "\n\n".join(f"[{p.get('section_title') or ('Page ' + str(p.get('page_number')))}]\n{p['text']}" for p in pages_content)
+            src["is_full_article"] = not is_partial
 
             research_cache.set_pdf(url, content_hash, pages_content)
 
@@ -600,12 +618,13 @@ class ResearchService:
                 emit_callback(
                     "pdf_extraction_completed",
                     "in_progress",
-                    f"Completed extraction of {len(pages_content)} pages ({total_chars} chars) from {src['title'][:35]}",
+                    f"Completed extraction of {len(pages_content)} pages ({total_chars} chars) from {src['title'][:35]} ({'PARTIAL' if is_partial else 'FULL'})",
                     {
                         "url": url,
                         "pages_extracted": len(pages_content),
                         "total_pages": len(raw_pages),
-                        "total_chars": total_chars
+                        "total_chars": total_chars,
+                        "is_partial": is_partial
                     }
                 )
 
@@ -613,6 +632,8 @@ class ResearchService:
             logger.warning(f"Failed to download/extract PDF {url}: {e}")
             src["content_type"] = "SEARCH_SNIPPET_ONLY"
             src["warning"] = f"Full PDF content was not accessible: {e}"
+            src["is_partial_extraction"] = False
+            src["extraction_status"] = "FAILED_FALLBACK_SNIPPET"
             if emit_callback:
                 emit_callback(
                     "pdf_failed",
@@ -642,8 +663,10 @@ class ResearchService:
         """
         src.setdefault("content", src.get("snippet", ""))
         src.setdefault("content_type", "SEARCH_SNIPPET_ONLY")
-        src.setdefault("page_count", 1)
-        src.setdefault("pages_extracted", 0)
+        src.setdefault("page_count", None)
+        src.setdefault("pages_extracted", None)
+        src.setdefault("is_partial_extraction", False)
+        src.setdefault("extraction_status", "SEARCH_SNIPPET")
         src.setdefault("pdf_pages", [])
 
         url = src.get("url", "")
@@ -672,8 +695,10 @@ class ResearchService:
         if cached_text:
             src["content"] = cached_text
             src["content_type"] = "FULL_HTML_ARTICLE"
-            src["page_count"] = 1
-            src["pages_extracted"] = 1
+            src["page_count"] = None
+            src["pages_extracted"] = None
+            src["is_partial_extraction"] = False
+            src["extraction_status"] = "FULL"
             src["is_full_article"] = True
             return src
 
@@ -986,18 +1011,20 @@ class ResearchService:
                     scored.sort(key=lambda x: x[0], reverse=True)
                     top_sentence = scored[0][1] if scored else (raw_sentences[0] if raw_sentences else page_text[:200])
 
+                    sec_name = p.get("section_title") or f"Page {page_num}"
                     ev_id = f"ev-pdf-{uuid.uuid4().hex[:6]}"
                     item = {
                         "id": ev_id,
                         "claim": top_sentence,
-                        "source": f"{src['title']} (Page {page_num})",
+                        "source": f"{src['title']} ({sec_name})",
                         "url": src["url"],
                         "page": page_num,
+                        "section": sec_name,
                         "contentType": "FULL_PDF_TEXT",
                         "publishedDate": src.get("published_date")
                     }
                     evidence_items.append(item)
-                    emit("evidence_extracted", "in_progress", f"Claim [p.{page_num}]: {top_sentence[:45]}...", {"evidence": item})
+                    emit("evidence_extracted", "in_progress", f"Claim [{sec_name}]: {top_sentence[:45]}...", {"evidence": item})
             else:
                 content_text = src.get("content") or src.get("snippet", "")
                 raw_sentences = [
@@ -1026,6 +1053,7 @@ class ResearchService:
                         "source": src["title"],
                         "url": src["url"],
                         "page": None,
+                        "section": src["title"],
                         "contentType": c_type,
                         "publishedDate": src.get("published_date")
                     }
@@ -1059,6 +1087,10 @@ class ResearchService:
                     "content_type": src.get("content_type", "SEARCH_SNIPPET_ONLY"),
                     "page_count": src.get("page_count"),
                     "pages_extracted": src.get("pages_extracted"),
+                    "is_partial_extraction": src.get("is_partial_extraction", False),
+                    "extraction_status": src.get("extraction_status", "FULL"),
+                    "skipped_pages_count": src.get("skipped_pages_count", 0),
+                    "skipped_reason": src.get("skipped_reason"),
                     "content_hash": src.get("content_hash"),
                     "warning": src.get("warning"),
                     "evidence_items": [ev for ev in evidence_items if ev["url"] == src["url"]]
@@ -1074,10 +1106,11 @@ class ResearchService:
                 emit("pdf_indexing_started", "in_progress", f"Chunking and embedding {src['title'][:35]}...", {"url": src["url"]})
                 src_chunks_count = 0
                 for p in src["pdf_pages"]:
+                    sec_name = p.get("section_title") or f"Page {p['page_number']}"
                     p_chunks = document_service.chunk_text(
                         text=p["text"],
                         page_number=p["page_number"],
-                        section_title=f"{src['title']} - Page {p['page_number']}"
+                        section_title=f"{src['title']} - {sec_name}"
                     )
                     for c in p_chunks:
                         all_chunks.append({
@@ -1085,7 +1118,7 @@ class ResearchService:
                             "document_id": debate_id or "web_research",
                             "content": c["content"],
                             "page_number": p["page_number"],
-                            "section_title": f"{src['title']} - Page {p['page_number']}",
+                            "section_title": sec_name,
                             "title": src["title"],
                             "url": src["url"],
                             "source_type": "web",
@@ -1097,7 +1130,7 @@ class ResearchService:
             else:
                 chunks = document_service.chunk_text(
                     text=src.get("content") or src.get("snippet", ""),
-                    page_number=1,
+                    page_number=None,
                     section_title=src["title"]
                 )
                 ev_type = "web_html" if src.get("content_type") == "FULL_HTML_ARTICLE" else "search_snippet"
@@ -1106,7 +1139,7 @@ class ResearchService:
                         "chunk_id": c["chunk_id"],
                         "document_id": debate_id or "web_research",
                         "content": c["content"],
-                        "page_number": 1,
+                        "page_number": None,
                         "section_title": src["title"],
                         "title": src["title"],
                         "url": src["url"],

@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import List, Dict, Any, Optional
 from .embedding_service import embedding_service
@@ -17,7 +18,8 @@ class RAGService:
         speaker: str = "PRO",
         document_id: Optional[str] = None,
         source_scope: str = "document",
-        round_number: int = 1
+        round_number: int = 1,
+        used_evidence_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieves, deduplicates, and formats evidence chunks for an agent's turn.
@@ -27,6 +29,12 @@ class RAGService:
           and source_type='document'. Never silently queries the web.
         - When source_scope in ['general_topic', 'web']: queries only indexed web sources (source_type='web').
         - When source_scope == 'both': searches across both uploaded document and web sources.
+
+        Multi-Page & Diversity Features:
+        - Broad candidate retrieval: fetches expanded candidate pool (up to 48 chunks) across all pages.
+        - Role affinity: PRO favors methodology & empirical results; CON favors limitations, risks & discussion.
+        - Cross-round freshness: penalizes previously cited chunk IDs across rounds.
+        - Multi-page distribution: limits chunks from the same page to promote diverse page sampling.
         """
         clean_scope = (source_scope or "document").lower()
 
@@ -36,7 +44,6 @@ class RAGService:
                 logger.info(f"[RAG] {clean_scope}-grounded debate has no attached document_id. Refusing to search web; returning empty evidence.")
                 return []
             target_doc_id = document_id
-            # Allow searching both original chunks and structured document knowledge for this document
             target_source_type = None
         elif clean_scope in ("general_topic", "web"):
             target_doc_id = None
@@ -69,14 +76,14 @@ class RAGService:
         speaker_upper = (speaker or "PRO").upper()
         if speaker_upper == "PRO":
             if opponent_argument and opponent_argument.strip():
-                query = f"{topic}. Affirmative defense, empirical verification, and rejoinder addressing: {opponent_argument[:250]}"
+                query = f"{topic}. Affirmative defense, empirical verification, experimental findings, methodology addressing: {opponent_argument[:250]}"
             else:
-                query = f"{topic}. Affirmative thesis framework, verified evidentiary findings, supporting empirical data"
+                query = f"{topic}. Affirmative framework, experimental methodology, empirical findings, verified results, data substantiation"
         else:  # CON
             if opponent_argument and opponent_argument.strip():
-                query = f"{topic}. Counter-examination, empirical blind spots, structural risks refuting affirmative argument: {opponent_argument[:250]}"
+                query = f"{topic}. Counter-examination, limitations, structural vulnerabilities, critical risks refuting affirmative argument: {opponent_argument[:250]}"
             else:
-                query = f"{topic}. Critical limitations, methodological flaws, architectural bottlenecks, complexity bounds, trade-offs, empirical failure modes"
+                query = f"{topic}. Methodological limitations, risks, ethical bounds, failure modes, complexity trade-offs, critique"
 
         # 2. Embedding using uniform 384-dimensional model
         query_vector = embedding_service.embed_text(query)
@@ -84,8 +91,9 @@ class RAGService:
             logger.error(f"[RAG] Query vector dimension mismatch: {len(query_vector)} != 384. Aborting retrieval.")
             return []
 
-        # 3. Scoped search in Qdrant with expanded candidate pool for web research diversity
-        fetch_k = max(self.top_k * 3, 10) if target_source_type == "web" else self.top_k
+        # 3. Scoped search in Qdrant with expanded candidate pool across all pages
+        # Fetching a wider window guarantees chunks from later pages (pages 2, 4, 7, 10+) enter candidate pool
+        fetch_k = max(self.top_k * 8, 40) if target_source_type == "web" else max(self.top_k * 5, 25)
         raw_hits = qdrant_service.search_evidence(
             query_vector=query_vector,
             document_id=target_doc_id,
@@ -93,32 +101,113 @@ class RAGService:
             top_k=fetch_k
         )
 
-        # 4. Deduplicate and apply source diversity across distinct URLs/sources
+        # 4. Two-Stage Reranking: Role Affinity + Freshness + Multi-Page Diversity
+        used_ids_set = set(str(uid) for uid in (used_evidence_ids or []))
+        pro_affinity_terms = {
+            "methodology", "method", "results", "empirical", "data", "finding", "findings",
+            "experiment", "experiments", "evaluation", "performance", "metric", "accuracy",
+            "verified", "evidence", "demonstrates", "proof", "implementation", "approach"
+        }
+        con_affinity_terms = {
+            "limitation", "limitations", "risk", "risks", "challenge", "challenges", "flaw",
+            "vulnerability", "bias", "cost", "failure", "fail", "threat", "concern",
+            "trade-off", "tradeoff", "ethical", "legal", "harm", "discussion", "bottleneck"
+        }
+
+        scored_candidates = []
+        for hit in raw_hits:
+            hit_id = str(hit.get("id") or hit.get("chunk_id") or "")
+            content = hit.get("content", "").strip()
+            if not content:
+                continue
+
+            section = (hit.get("section_title") or "").lower()
+            content_lower = content.lower()
+            words_in_text = set(re.findall(r'\b\w+\b', content_lower))
+            base_score = float(hit.get("score", 0.5))
+
+            # Role affinity boost
+            affinity_bonus = 0.0
+            if speaker_upper == "PRO":
+                if any(k in section for k in ["method", "result", "finding", "experiment", "evaluation", "empirical"]):
+                    affinity_bonus += 0.12
+                else:
+                    pro_overlap = len(words_in_text.intersection(pro_affinity_terms))
+                    if pro_overlap > 0:
+                        affinity_bonus += min(pro_overlap * 0.02, 0.08)
+            else:
+                if any(k in section for k in ["limitation", "risk", "challenge", "discussion", "ethical", "threat", "trade"]):
+                    affinity_bonus += 0.14
+                else:
+                    con_overlap = len(words_in_text.intersection(con_affinity_terms))
+                    if con_overlap > 0:
+                        affinity_bonus += min(con_overlap * 0.02, 0.09)
+
+            # Round freshness penalty to prevent repeating identical evidence across rounds
+            freshness_penalty = 0.25 if hit_id in used_ids_set else 0.0
+
+            adjusted_score = base_score + affinity_bonus - freshness_penalty
+            scored_candidates.append({
+                "hit": hit,
+                "adjusted_score": adjusted_score,
+                "base_score": base_score,
+                "hit_id": hit_id,
+                "content": content
+            })
+
+        scored_candidates.sort(key=lambda x: x["adjusted_score"], reverse=True)
+
+        # 5. Greedy Selection with Page & Source Diversity
         seen_texts = set()
         deduped = []
         source_counts: Dict[str, int] = {}
+        source_page_counts: Dict[tuple, int] = {}
         max_per_source = 2 if target_source_type == "web" else self.top_k
 
-        # Primary pass: pick high-scoring chunks while guaranteeing source diversity
-        for hit in raw_hits:
-            content = hit.get("content", "").strip()
-            if not content or content in seen_texts:
+        # Pass 1: Strict page diversity (max 1 chunk per page of a document, max 2 chunks per source)
+        for item in scored_candidates:
+            hit = item["hit"]
+            content = item["content"]
+            if content in seen_texts:
                 continue
             src_key = hit.get("url") or hit.get("title") or "default"
-            if source_counts.get(src_key, 0) < max_per_source:
+            page_num = hit.get("page_number")
+            page_key = (src_key, page_num) if page_num is not None else (src_key, f"chunk-{len(deduped)}")
+
+            if source_counts.get(src_key, 0) < max_per_source and source_page_counts.get(page_key, 0) < 1:
                 seen_texts.add(content)
                 source_counts[src_key] = source_counts.get(src_key, 0) + 1
+                source_page_counts[page_key] = source_page_counts.get(page_key, 0) + 1
+                hit["confidenceScore"] = round(min(max(item["adjusted_score"] * 100, 50.0), 99.0), 1)
                 deduped.append(hit)
                 if len(deduped) >= self.top_k:
                     break
 
-        # Secondary pass: if target top_k is not filled, add remaining valid hits
+        # Pass 2: Relax page constraint if top_k not reached, keeping source diversity
         if len(deduped) < self.top_k:
-            for hit in raw_hits:
-                content = hit.get("content", "").strip()
-                if not content or content in seen_texts:
+            for item in scored_candidates:
+                hit = item["hit"]
+                content = item["content"]
+                if content in seen_texts:
+                    continue
+                src_key = hit.get("url") or hit.get("title") or "default"
+                if source_counts.get(src_key, 0) < max_per_source:
+                    seen_texts.add(content)
+                    source_counts[src_key] = source_counts.get(src_key, 0) + 1
+                    hit["confidenceScore"] = round(min(max(item["adjusted_score"] * 100, 50.0), 99.0), 1)
+                    deduped.append(hit)
+                    if len(deduped) >= self.top_k:
+                        break
+
+        # Pass 3: Fill remaining if needed
+        if len(deduped) < self.top_k:
+            for item in scored_candidates:
+                hit = item["hit"]
+                content = item["content"]
+                if content in seen_texts:
                     continue
                 seen_texts.add(content)
+                hit["confidenceScore"] = round(min(max(item["adjusted_score"] * 100, 50.0), 99.0), 1)
                 deduped.append(hit)
                 if len(deduped) >= self.top_k:
                     break
@@ -140,7 +229,7 @@ class RAGService:
                         "is_image": True
                     })
 
-        # 5. Format evidence references
+        # 6. Format evidence references
         formatted_evidence = []
         for idx, hit in enumerate(deduped, 1):
             score = hit.get("score", 0.0)
@@ -164,28 +253,28 @@ class RAGService:
                     "is_image": True
                 })
             else:
-                ev_type = hit.get("evidence_type") or ("web_pdf" if hit.get("source_type") == "web" and hit.get("page_number", 0) > 0 else "document")
+                ev_type = hit.get("evidence_type") or ("web_pdf" if hit.get("source_type") == "web" and (hit.get("page_number") is not None and hit.get("page_number") > 0) else "document")
                 content_type = (
                     "FULL_PDF_TEXT" if ev_type == "web_pdf"
                     else ("FULL_HTML_ARTICLE" if ev_type == "web_html"
                     else ("SEARCH_SNIPPET_ONLY" if ev_type == "search_snippet" else "DOCUMENT"))
                 )
                 pg = hit.get("page_number")
-                pg_str = f" (Page {pg})" if (pg and pg > 0) else ""
+                pg_str = f" (Page {pg})" if (pg is not None and pg > 0) else ""
                 source_title = hit.get("title") or "Document"
-                source_label = f"{source_title}{pg_str}" if (pg and pg > 0 and f"Page {pg}" not in source_title) else source_title
+                source_label = f"{source_title}{pg_str}" if (pg is not None and pg > 0 and f"Page {pg}" not in source_title) else source_title
                 sec_name = hit.get("section_title") or "Analysis"
 
                 formatted_evidence.append({
-                    "id": hit.get("id"),
+                    "id": hit.get("chunk_id") or hit.get("id") or f"chunk-{idx}",
                     "claim": f"Evidentiary finding from {sec_name}{pg_str}",
                     "source": source_label,
                     "page": pg,
-                    "section": hit.get("section_title"),
+                    "section": sec_name,
                     "url": hit.get("url") or None,
                     "content": hit.get("content"),
                     "verdict": verdict,
-                    "confidenceScore": round(min(max(score * 100, 50.0), 99.0), 1),
+                    "confidenceScore": hit.get("confidenceScore") or round(min(max(score * 100, 50.0), 99.0), 1),
                     "is_image": False,
                     "contentType": content_type
                 })

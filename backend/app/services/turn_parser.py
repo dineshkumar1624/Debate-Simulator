@@ -415,26 +415,60 @@ class TurnParser:
                     verdict=matched_chunk.get("verdict", "supported")
                 ))
 
-        # 2. If no declared refs matched or declared refs were empty, infer from argument mentions or bind top relevant chunks
+        # 2. If no declared refs matched or declared refs were empty, infer from argument mentions or semantic match
         if not resolved_refs:
+            # First pass: check for explicit references or mentions
             for idx, chunk in enumerate(evidence_pool, 1):
                 page = chunk.get("page")
-                # If page is explicitly mentioned in argument text or it is the primary top chunk
-                page_mentioned = page is not None and (f"page {page}" in argument_text.lower() or f"p. {page}" in argument_text.lower() or f"p.{page}" in argument_text.lower())
+                page_mentioned = page is not None and bool(
+                    re.search(rf"\b(?:page|p\.)\s*{page}\b", argument_text, re.IGNORECASE)
+                )
                 ref_mentioned = f"[{idx}]" in argument_text or f"reference {idx}" in argument_text.lower()
+                sec = (chunk.get("section") or "").lower()
+                sec_clean = re.sub(r"\(page\s*\d+\)", "", sec).strip()
+                sec_mentioned = len(sec_clean) > 3 and sec_clean in argument_text.lower()
 
-                if page_mentioned or ref_mentioned or idx == 1:
+                if page_mentioned or ref_mentioned or sec_mentioned:
                     resolved_refs.append(GroundedEvidenceReference(
                         chunk_id=str(chunk.get("id", uuid.uuid4())),
                         source=chunk.get("source") or "Document",
                         page=chunk.get("page"),
                         section=chunk.get("section"),
-                        excerpt=chunk.get("content"), # Genuine PDF passage!
+                        excerpt=chunk.get("content"),
                         relevance_score=chunk.get("confidenceScore") or chunk.get("score"),
-                        relevance_explanation=f"Documentary evidence from {chunk.get('section') or 'passage'}",
+                        relevance_explanation=f"Explicitly referenced evidence from {chunk.get('section') or 'passage'}",
                         verdict=chunk.get("verdict", "supported")
                     ))
-                    if len(resolved_refs) >= 2: # Keep citations focused
+                    if len(resolved_refs) >= 2:
+                        break
+
+            # Second pass: if still no explicit match, score chunks by semantic token overlap with argument_text
+            if not resolved_refs:
+                arg_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', argument_text.lower()))
+                scored_chunks = []
+                for idx, chunk in enumerate(evidence_pool, 1):
+                    content = (chunk.get("content") or "").lower()
+                    sec = (chunk.get("section") or "").lower()
+                    chunk_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', content + " " + sec))
+                    overlap = len(arg_words.intersection(chunk_words))
+                    scored_chunks.append((overlap, idx, chunk))
+
+                # Sort by token overlap descending
+                scored_chunks.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+
+                # Pick top 1 or 2 chunks with highest overlap
+                for overlap, idx, chunk in scored_chunks[:2]:
+                    resolved_refs.append(GroundedEvidenceReference(
+                        chunk_id=str(chunk.get("id", uuid.uuid4())),
+                        source=chunk.get("source") or "Document",
+                        page=chunk.get("page"),
+                        section=chunk.get("section"),
+                        excerpt=chunk.get("content"),
+                        relevance_score=chunk.get("confidenceScore") or chunk.get("score"),
+                        relevance_explanation=f"Substantiating evidence from {chunk.get('section') or 'passage'}",
+                        verdict=chunk.get("verdict", "supported")
+                    ))
+                    if len(resolved_refs) >= 2:
                         break
 
         return resolved_refs

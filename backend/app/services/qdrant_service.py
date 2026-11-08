@@ -156,10 +156,12 @@ class QdrantService:
 
         for chunk, vector in zip(chunks, vectors):
             point_id = str(chunk.get("chunk_id", uuid.uuid4()))
+            pg_raw = chunk.get("page_number")
+            pg_val = int(pg_raw) if (pg_raw is not None and str(pg_raw).strip() not in ("", "None", "null")) else None
             payload = {
                 "chunk_id": point_id,
                 "document_id": str(chunk.get("document_id", "")),
-                "page_number": int(chunk.get("page_number", 1)),
+                "page_number": pg_val,
                 "section_title": str(chunk.get("section_title", "General")),
                 "content": str(chunk.get("content", "")),
                 "source_type": str(chunk.get("source_type", "document")),
@@ -252,7 +254,7 @@ class QdrantService:
                     "id": str(hit.id),
                     "score": float(hit.score),
                     "document_id": payload.get("document_id", ""),
-                    "page_number": payload.get("page_number", 1),
+                    "page_number": payload.get("page_number"),
                     "section_title": payload.get("section_title", "General"),
                     "content": payload.get("content", ""),
                     "source_type": payload.get("source_type", "document"),

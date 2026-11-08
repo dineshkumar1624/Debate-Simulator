@@ -63,12 +63,15 @@ interface GroundedArgument {
   title: string;
   argumentText: string;
   confidence: number;
-  pageNumber: number;
+  pageNumber?: number | null;
   sectionTitle: string;
   supportingEvidence: string;
   counterRelation: string;
   evidenceId: string;
   executionStatus?: 'REAL_LOCAL_MODEL' | 'REAL_REMOTE_API' | 'SIMULATED';
+  url?: string | null;
+  contentType?: string | null;
+  supportingExcerpt?: string | null;
 }
 
 function formatElapsedTime(seconds: number): string {
@@ -493,10 +496,12 @@ export const DebatePage: React.FC = () => {
           const isPro = turn.role === 'PRO' || turn.speaker === 'DEBATER_A';
           const ev = turn.evidence && turn.evidence.length > 0 ? (turn.evidence[0] as any) : null;
           const isDocImage = debateDocument && ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes((debateDocument.fileType || '').toLowerCase());
-          let pageNum: number | undefined = undefined;
-          if (ev?.pageNumber) pageNum = Number(ev.pageNumber);
-          else if (ev?.page) pageNum = Number(ev.page);
-          else if (ev?.source) {
+          let pageNum: number | null = null;
+          if (ev?.page !== undefined && ev?.page !== null) {
+            pageNum = Number(ev.page);
+          } else if (ev?.pageNumber !== undefined && ev?.pageNumber !== null) {
+            pageNum = Number(ev.pageNumber);
+          } else if (ev?.source) {
             const m = String(ev.source).match(/page\s*(\d+)/i);
             if (m) pageNum = parseInt(m[1], 10);
           }
@@ -510,12 +515,15 @@ export const DebatePage: React.FC = () => {
             title: turn.title || (isPro ? `Round ${rnd.roundNumber} Affirmative Case` : `Round ${rnd.roundNumber} Opposition Rebuttal`),
             argumentText: turn.content,
             confidence: (turn as any).confidence || (ev?.confidenceScore ? Math.round(ev.confidenceScore) : 92),
-            pageNumber: isDocImage ? 1 : (pageNum || 1),
+            pageNumber: isDocImage ? 1 : (pageNum !== null && !isNaN(pageNum) ? pageNum : null),
             sectionTitle: ev?.sectionTitle || ev?.section || (isDocImage ? 'Visual Evidence' : (isPro ? 'Affirmative Case' : 'Counter-Examination Rebuttal')),
             supportingEvidence: ev?.claim || (ev?.content ? `"${ev.content.slice(0, 160)}..."` : `${debateDocument?.name || 'Document'} verified reference`),
             counterRelation: isPro ? 'Affirmative Grounding: Cites verified documentary findings.' : 'Direct Clash: Rebuts PRO claims directly.',
             evidenceId: evId,
-            executionStatus: turn.executionStatus || 'REAL_LOCAL_MODEL'
+            executionStatus: turn.executionStatus || 'REAL_LOCAL_MODEL',
+            url: ev?.url || null,
+            contentType: ev?.contentType || (pageNum ? 'FULL_PDF_TEXT' : 'FULL_HTML_ARTICLE'),
+            supportingExcerpt: ev?.content || ev?.excerpt || ev?.claim || null
           });
         });
       });
@@ -1132,8 +1140,10 @@ export const DebatePage: React.FC = () => {
   };
 
   // Jump document reader to a specific argument's citation
-  const handleJumpToCitation = (pageNum: number, evId?: string) => {
-    setViewerTargetPage(pageNum);
+  const handleJumpToCitation = (pageNum?: number | null, evId?: string) => {
+    if (pageNum !== undefined && pageNum !== null) {
+      setViewerTargetPage(pageNum);
+    }
     if (evId) setActiveEvidenceHighlight(evId);
 
     // If on mobile, switch to document tab
@@ -2991,24 +3001,34 @@ export const DebatePage: React.FC = () => {
 
                             {/* View Source Trigger */}
                             <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleJumpToCitation(arg.pageNumber, arg.evidenceId)}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border transition-all bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-500/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/70 cursor-pointer"
-                                title={`Jump reader to Page ${arg.pageNumber}`}
-                              >
-                                <BookOpen className="w-3 h-3 text-indigo-500" />
-                                <span>
-                                  {arg.evidenceId?.startsWith('img-') || arg.sectionTitle?.includes('Visual Evidence')
-                                    ? `VIEW EVIDENCE (${arg.evidenceId})`
-                                    : `VIEW SOURCE (p. ${arg.pageNumber})`}
-                                </span>
-                              </button>
+                              {(arg.pageNumber || arg.url) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (arg.pageNumber) {
+                                      handleJumpToCitation(arg.pageNumber, arg.evidenceId);
+                                    } else if (arg.url) {
+                                      window.open(arg.url, '_blank', 'noopener,noreferrer');
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border transition-all bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-500/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/70 cursor-pointer"
+                                  title={arg.pageNumber ? `Jump reader to Page ${arg.pageNumber}` : 'Open source article'}
+                                >
+                                  <BookOpen className="w-3 h-3 text-indigo-500" />
+                                  <span>
+                                    {arg.evidenceId?.startsWith('img-') || arg.sectionTitle?.includes('Visual Evidence')
+                                      ? `VIEW EVIDENCE (${arg.evidenceId})`
+                                      : arg.pageNumber
+                                      ? `VIEW SOURCE (p. ${arg.pageNumber})`
+                                      : `VIEW SOURCE (Web Article)`}
+                                  </span>
+                                </button>
+                              )}
 
                               <button
                                 type="button"
                                 onClick={() => setExpandedArgId(isExpanded ? null : arg.id)}
-                                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                                className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                                 aria-label={isExpanded ? 'Collapse argument' : 'Expand argument'}
                               >
                                 {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -3025,7 +3045,9 @@ export const DebatePage: React.FC = () => {
                           <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
                             <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 text-[11px] font-medium">
                               <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                              <span>Source: Page {arg.pageNumber} · {arg.sectionTitle}</span>
+                              <span>
+                                Source: {arg.pageNumber ? `Page ${arg.pageNumber} · ` : ''}{arg.sectionTitle}
+                              </span>
                             </div>
                             <span className="text-[10px] text-slate-400 font-medium">
                               Relevance: {arg.confidence}%
@@ -3039,8 +3061,30 @@ export const DebatePage: React.FC = () => {
                                 <Scale className="w-4 h-4 shrink-0 mt-0.5" />
                                 <span>Dialectic Relation: {arg.counterRelation}</span>
                               </div>
+                              {arg.contentType && (
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300">
+                                    {arg.contentType}
+                                  </span>
+                                  {arg.url && (
+                                    <a
+                                      href={arg.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[11px] text-cyan-600 dark:text-cyan-400 hover:underline inline-flex items-center gap-1 truncate max-w-xs"
+                                    >
+                                      {arg.url} <ExternalLink className="w-3 h-3 shrink-0" />
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+                              {arg.supportingExcerpt && (
+                                <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-white/5 text-[11px] text-slate-700 dark:text-slate-300 italic">
+                                  "{arg.supportingExcerpt}"
+                                </div>
+                              )}
                               <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-[11px]">
-                                <span>Verified against {debateDocument?.name || 'Document'}</span>
+                                <span>Verified against {debateDocument?.name || 'Document / Web Research Pool'}</span>
                               </div>
                             </div>
                           )}
@@ -3463,13 +3507,15 @@ export const DebatePage: React.FC = () => {
                               <button
                                 key={idx}
                                 type="button"
-                                onClick={() => handleJumpToCitation(t.pageNumber!, t.evidenceId)}
+                                onClick={() => handleJumpToCitation(t.pageNumber, t.evidenceId)}
                                 className="flex items-center justify-between p-2 rounded-lg bg-white/70 dark:bg-black/30 border border-slate-200 dark:border-white/10 hover:border-indigo-400 text-left transition-all cursor-pointer"
                               >
                                 <span className="text-slate-700 dark:text-slate-300 truncate">
                                   {t.evidenceId?.startsWith('img-') || t.sectionTitle?.includes('Visual')
                                     ? `Evidence [${t.evidenceId}]: ${t.sectionTitle} (${t.speaker})`
-                                    : `Page ${t.pageNumber}: ${t.sectionTitle} (${t.speaker})`}
+                                    : t.pageNumber
+                                    ? `Page ${t.pageNumber}: ${t.sectionTitle} (${t.speaker})`
+                                    : `${t.sectionTitle} (${t.speaker})`}
                                 </span>
                                 <ExternalLink className="w-3 h-3 text-indigo-400 shrink-0 ml-1.5" />
                               </button>

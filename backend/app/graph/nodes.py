@@ -196,12 +196,15 @@ def retrieve_pro_evidence(state: DebateGraphState) -> Dict[str, Any]:
         "message": f"Round {round_num}: Retrieving verified document evidence for Gemma (PRO)..."
     })
 
+    used_ids = list(state.get("used_evidence_ids") or [])
     evidence = rag_service.retrieve_evidence_for_turn(
         topic=topic,
         opponent_argument=latest_con,
         speaker="PRO",
         document_id=doc_id,
-        source_scope=scope
+        source_scope=scope,
+        round_number=round_num,
+        used_evidence_ids=used_ids
     )
     context_str = rag_service.format_evidence_context(evidence)
 
@@ -472,9 +475,17 @@ def save_pro_message(state: DebateGraphState) -> Dict[str, Any]:
     ]
     new_transcript = existing_transcripts + [transcript_item]
 
+    # Track evidence IDs used in this turn to prevent repetition across rounds
+    used_ids = list(state.get("used_evidence_ids") or [])
+    for ev_item in (evidence or []):
+        cid = ev_item.get("chunk_id") or ev_item.get("id")
+        if cid and str(cid) not in used_ids:
+            used_ids.append(str(cid))
+
     res = {
         "transcript": new_transcript,
         "latest_pro_argument": turn.get("content", ""),
+        "used_evidence_ids": used_ids,
         "metrics": metrics
     }
     if not is_valid and not turn.get("content"):
@@ -503,12 +514,15 @@ def retrieve_con_evidence(state: DebateGraphState) -> Dict[str, Any]:
         "message": f"Round {round_num}: Retrieving counter-evidence from document for Qwen (CON)..."
     })
 
+    used_ids = list(state.get("used_evidence_ids") or [])
     evidence = rag_service.retrieve_evidence_for_turn(
         topic=topic,
         opponent_argument=latest_pro,
         speaker="CON",
         document_id=doc_id,
-        source_scope=scope
+        source_scope=scope,
+        round_number=round_num,
+        used_evidence_ids=used_ids
     )
     context_str = rag_service.format_evidence_context(evidence)
 
@@ -795,9 +809,17 @@ def save_con_message(state: DebateGraphState) -> Dict[str, Any]:
     ]
     new_transcript = existing_transcripts + [transcript_item]
 
+    # Track evidence IDs used in this turn to prevent repetition across rounds
+    used_ids = list(state.get("used_evidence_ids") or [])
+    for ev_item in (evidence or []):
+        cid = ev_item.get("chunk_id") or ev_item.get("id")
+        if cid and str(cid) not in used_ids:
+            used_ids.append(str(cid))
+
     res = {
         "transcript": new_transcript,
         "latest_con_argument": turn.get("content", ""),
+        "used_evidence_ids": used_ids,
         "metrics": metrics
     }
     if not is_valid and not turn.get("content"):
